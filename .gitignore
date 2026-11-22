@@ -4,3 +4,4 @@ spike/
 *.gz
 router/asim-relay/asim-relay-linux-amd64
 router/asim-relay/asim-relay-windows-amd64.exe
+router/asim-relay/asim-relay.exe
