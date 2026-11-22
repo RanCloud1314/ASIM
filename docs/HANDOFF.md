@@ -41,7 +41,7 @@ Go 中继只保留控制面）。
 - 路由器：OpenWrt 25.12.6 x86_64（apk 包管理），LAN `192.168.100.1`，`root` / `password`。
   - SSH helper：`python C:\Users\22938\AppData\Local\Temp\opencode\rt\rssh.py "<命令>"`（paramiko；**没有 `timeout` 命令，没有 `curl`**，用 `wget -q -O -`）。
   - 部署 helper：`python C:\Users\22938\AppData\Local\Temp\opencode\rt\deploy.py "<命令>"`（走 exec stdin 传文件，路由器无 sftp-server）。
-- 路由器上已有：`/usr/bin/asim-relay`、`/etc/asim/relay.json`、`/etc/init.d/asim-relay`、`/usr/bin/mihomo`、`/etc/init.d/mihomo`、`/etc/asim/mihomo/config.yaml`、`tcpdump`。
+- 路由器上已有：`/usr/bin/asim-relay`（0.4.1，旧版备份 `/usr/bin/asim-relay-0.4.0.bak`）、`/etc/asim/relay.json`、`/etc/init.d/asim-relay`、`/usr/bin/mihomo`、`/etc/init.d/mihomo`、`/etc/asim/mihomo/config.yaml`、`tcpdump`。
 - mihomo 控制器：`http://127.0.0.1:9090`（只绑本机，无 secret）。
 - API token：`3f9c1c7a5b2e4d6f8a0b1c2d3e4f5a6b`，`http://192.168.100.1:8080/status`。
 

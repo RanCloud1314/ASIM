@@ -353,15 +353,19 @@ Invoke-RestMethod -Uri 'http://192.168.100.1:8080/status' -Headers $h
 
 - Release `v0.4.0` 发 3 件：`asim-v0.4.0.zip`（模块，含 asimd pid 复用修复）、
   `asim-relay-linux-amd64`（32391328）、`asim-relay-windows-amd64.exe`（31581184）。
-- `v0.4.1`（未发布）删掉了 relay 的旧转发面：500/4500 监听、DoH 解析、内嵌 Xray/Hysteria
-  全部移除，`go.mod` 只剩 module/go 两行，二进制约 7MB。`/status` 的 `flows`/`epdg_ips`
-  改为从 mihomo `/connections` 取，`/ping` 改为 mihomo 的代理延迟测试，`/enable` `/disable`
-  改为热切 mihomo 的 TUN。要退回旧链路得装回 `v0.4.0` 的二进制。
-- 路由器上跑的是 23:36 那版二进制（与 `v0.4.0` 同源，`version` 字段还是 `0.3.1`），**没有跟着重装**：
-  重装会触发 mihomo 热重载、拆掉当前 ePDG 会话；等下次维护窗口或出问题时再对齐。
+- `v0.4.1`（2026-11-23 已发布并部署到路由器 + 手机）删掉了 relay 的旧转发面：500/4500 监听、
+  DoH 解析、内嵌 Xray/Hysteria 全部移除，`go.mod` 只剩 module/go 两行，二进制约 7MB。
+  `/status` 的 `flows`/`epdg_ips` 改为从 mihomo `/connections` 取，`/ping` 改为 mihomo 的代理
+  延迟测试，`/enable` `/disable` 改为热切 mihomo 的 TUN。要退回旧链路得装回 `v0.4.0` 的二进制。
+- 部署过程：换二进制 + `relay.json` 后 `asim-relay restart`，mihomo 被热重载（`force=true`），
+  已注册的 ePDG 会话未断；手机装 `asim-v0.4.1.zip` 后重启，约 2 分钟恢复
+  `voice=IN_SERVICE`、`iwlan=HOME`，`/status` 里出现新会话 `192.168.100.103:* → 31.94.76.5:500`。
+  路由器上旧二进制备份在 `/usr/bin/asim-relay-0.4.0.bak`、旧配置在 `/etc/asim/relay.json.bak`。
+- 注意：模块 zip 解出来的脚本权限是 644（Windows 打的包没有 exec 位），WebUI 一律用
+  `sh <脚本>` 调用，所以不影响；直接执行脚本会 `Permission denied`。
 - **线上配置变更（重要）**：`/etc/asim/relay.json` 的 `node.port` 已于 22:12 通过
   `PUT /config` 热切到 **56007**，并已落盘（重启不会回退）。`56006` 只在文档历史里出现。
-  该文件里旧的 `domain` / `listen_addr` / `listen_ports` 字段现在是未知字段，下次保存会被丢掉。
+  0.4.1 部署时该文件已按新结构重写，旧的 `domain` / `listen_addr` / `listen_ports` 已删除。
 
 ## 取证产物（本轮，2026-11-22 22:15–23:00）
 

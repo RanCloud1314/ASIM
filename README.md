@@ -225,7 +225,8 @@ build.ps1          打包 module/ → asim-vX.Y.Z.zip，并编译两个平台的
 
 ## 版本
 
-当前 `v0.4.1`：旧的中继转发面（500/4500 监听、DoH 解析、内嵌 Xray/Hysteria 引擎）已删除，
-`asim-relay` 只剩控制面，二进制约 7MB；`/status`、`/ping`、启停开关全部走 mihomo。
+当前 `v0.4.1`（已发布，路由器与手机均已部署）：旧的中继转发面（500/4500 监听、DoH 解析、
+内嵌 Xray/Hysteria 引擎）已删除，`asim-relay` 只剩控制面，二进制约 7MB；`/status`、`/ping`、
+启停开关全部走 mihomo。
 `v0.4.0` 是切换数据面到 mihomo 的第一版（仍带旧转发面）；`v0.3.x` 是纯自研转发路线（已废弃）。
 逐条验收证据见 [`docs/superpowers/plans/2026-11-22-asim-acceptance.md`](docs/superpowers/plans/2026-11-22-asim-acceptance.md)。
