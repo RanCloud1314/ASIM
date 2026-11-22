@@ -2,3 +2,4 @@ spike/
 *.zip
 module/bin/mihomo
 .superpowers/
+*.gz
