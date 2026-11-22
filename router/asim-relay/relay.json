@@ -4,11 +4,14 @@
   "listen_ports": [500, 4500],
   "node": {
     "host": "pokemon888-go.pikaholo.com",
-    "port": 56006,
+    "port": 56007,
     "password": "a24d95eb-e678-448d-a098-1a1248927c31",
     "sni": "iosapps.itunes.apple.com"
   },
   "api_listen": "192.168.100.1:8080",
   "api_token": "3f9c1c7a5b2e4d6f8a0b1c2d3e4f5a6b",
-  "enabled": true
+  "enabled": true,
+  "mihomo_config": "/etc/asim/mihomo/config.yaml",
+  "mihomo_api": "http://127.0.0.1:9090",
+  "mihomo_secret": ""
 }

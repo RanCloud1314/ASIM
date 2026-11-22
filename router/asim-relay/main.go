@@ -35,6 +35,10 @@ type Config struct {
 	APIListen  string `json:"api_listen"`
 	APIToken   string `json:"api_token"`
 	Enabled    bool   `json:"enabled"`
+	// MihomoConfig is the config.yaml mihomo runs; empty disables the sync.
+	MihomoConfig string `json:"mihomo_config"`
+	MihomoAPI    string `json:"mihomo_api"`
+	MihomoSecret string `json:"mihomo_secret"`
 }
 
 var cfgPath string
@@ -429,6 +433,11 @@ func (r *relay) handleConfig(w http.ResponseWriter, req *http.Request) {
 		domain := r.cfg.Domain
 		pin := r.cfg.EpdgIP
 		enabled := r.cfg.Enabled
+		mihomoConfig := r.cfg.MihomoConfig
+		mihomoAPI := r.cfg.MihomoAPI
+		mihomoSecret := r.cfg.MihomoSecret
+		node := r.cfg.Node
+		apiToken := r.cfg.APIToken
 		r.cfgMu.Unlock()
 
 		if newNode != oldNode {
@@ -447,7 +456,18 @@ func (r *relay) handleConfig(w http.ResponseWriter, req *http.Request) {
 			r.killFlows()
 		}
 		r.saveConfig()
-		json.NewEncoder(w).Encode(map[string]any{"ok": true, "restart_required": restart})
+		resp := map[string]any{"ok": true, "restart_required": restart}
+		if mihomoConfig != "" {
+			secret := mihomoSecret
+			if secret == "" {
+				secret = apiToken
+			}
+			if err := syncMihomo(mihomoConfig, mihomoAPI, secret, node); err != nil {
+				log.Printf("mihomo: %v", err)
+				resp["mihomo_error"] = err.Error()
+			}
+		}
+		json.NewEncoder(w).Encode(resp)
 	default:
 		http.Error(w, "GET or PUT", http.StatusMethodNotAllowed)
 	}
@@ -553,6 +573,15 @@ func main() {
 		}
 	}()
 	log.Printf("asim-relay up: domain=%s api=%s enabled=%v", cfg.Domain, cfg.APIListen, cfg.Enabled)
+	if cfg.MihomoConfig != "" {
+		secret := cfg.MihomoSecret
+		if secret == "" {
+			secret = cfg.APIToken
+		}
+		if err := syncMihomo(cfg.MihomoConfig, cfg.MihomoAPI, secret, cfg.Node); err != nil {
+			log.Printf("mihomo: %v", err)
+		}
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
