@@ -133,22 +133,16 @@ acquire_lock() {
   mkdir "$LOCKD" 2>/dev/null
 }
 
-shutdown() {
-  rm -rf "$LOCKD"
-  rm -f "$PIDF"
-  log "stopped"
-}
-
 run() {
   if ! acquire_lock; then
     log "another instance holds the lock, exit"
     return 0
   fi
   echo $$ > "$PIDF"
-  # shortcut: no unlock from the TERM trap — `cmd phone` inside a signal trap of a
-  # daemonized shell fails with FAILED_TRANSACTION on this device (verified), so
-  # stop/uninstall.sh do the restore after this process is gone.
-  trap 'shutdown; exit 0' TERM INT
+  # shortcut: nothing but exit in the trap. External commands inside a signal trap of a
+  # daemonized shell fail here (verified: `cmd phone` -> FAILED_TRANSACTION, rm/date -> ENOENT),
+  # so stop/uninstall.sh restore the mask and start() reaps the stale pid/lock.
+  trap 'exit 0' TERM INT
   log "started (pid $$, slots: $SLOTS)"
   while :; do
     tick

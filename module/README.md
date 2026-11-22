@@ -15,25 +15,77 @@
 
 ## 安装
 
-```sh
+```powershell
 .\build.ps1                                  # → asim-<version>.zip（PowerShell 5.1+）
-KernelSU 管理器 → 安装 zip → 重启手机
 ```
 
-安装后在 KernelSU 管理器里打开模块 WebUI 管理。
+把 zip 装进 KernelSU 管理器，然后**重启手机**。
+
+装完在 KernelSU 管理器的模块页点 `WEBUI` 打开控制台。守护会自动读取
+`/data/adb/asim/asim.conf` 里的 `SLOTS` 并在每个 tick 施加 GSM-only。
+
+## 使用
+
+WebUI 上：
+
+- 每张物理卡一张卡片：网络类型掩码、语音/数据注册、IWLAN 状态、原值。
+- 右上角开关 = 是否接管这张卡。打开会把它加进 `SLOTS` 并立刻锁 GSM-only；
+  关掉会从 `SLOTS` 移除并立刻恢复原值。**已经接管的卡由守护每 60 秒重新施加**，
+  所以手工改回去会被改回来，要退出保护请用开关或下面的「停止守护」。
+- 中继区显示路由器 `asim-relay` 的启用状态、ePDG 地址数和活跃流，按钮可切换启用/停用。
+- 「停止守护并恢复原网络类型」= `asimd.sh stop`：立刻停守护、按存档恢复每张已接管的卡。
+  想重新开启保护就重启手机。
+
+配置文件 `/data/adb/asim/asim.conf`（安装时如不存在才写入默认值，升级不覆盖）：
+
+```sh
+SLOTS="1"                        # 要接管的槽位，空格分隔；slot id 从 0 开始，不是 subId
+ROUTER_API="http://192.168.100.1:8080"
+ROUTER_TOKEN="3f9c1c7a5b2e4d6f8a0b1c2d3e4f5a6b"
+```
 
 ## 卸载
 
-KernelSU 管理器卸载即可：`uninstall.sh` 会把网络类型恢复成安装前的精确原值并停掉守护。
+KernelSU 管理器卸载即可：`uninstall.sh` 会先停守护、把网络类型恢复成安装前的精确原值，
+再删掉 `/data/adb/asim`。
 
 ## 手工恢复（应急）
 
+优先用脚本，它按存档恢复，不会写错值：
+
 ```sh
-adb shell 'su -c "cmd phone set-allowed-network-types-for-users -s 1 11001101001110000111"'
+adb shell 'su -c "sh /data/adb/modules/asim/scripts/nocamp.sh unlock 1"'
+adb shell 'su -c "sh /data/adb/modules/asim/scripts/asimd.sh stop"'   # 连同停守护
 ```
+
+存档被删了、只能手写时，本机 slot 1 的原值是 **54151**：
+
+```sh
+adb shell 'su -c "cmd phone set-allowed-network-types-for-users -s 1 1101001110000111"'
+adb shell 'cmd phone get-allowed-network-types-for-users -s 1'       # 应回 GPRS|EDGE|...|LTE_CA
+```
+
+如果手写值不对导致手机没信号，把上面四条路都试一遍，最后一招是卸载模块后重启。
+
+## 自检
+
+```sh
+adb shell 'su -c "sh /data/adb/modules/asim/scripts/nocamp.sh selftest"'
+adb shell 'su -c "sh /data/adb/modules/asim/scripts/asimd.sh selftest"'
+```
+
+只测纯函数和解析，不做写操作。
 
 ## 已知限制
 
-- 必须在家庭 WiFi 下才有 VoWiFi；出门只有 WiFi 通话外的蜂窝能力（本方案不给）。
-- GSM-only 不防 2G 驻留：当地若仍有 GSM 覆盖，卡可能驻留 2G。
-- 切换飞行模式或断开 WiFi 会拆掉 IMS PDN 且不会自动重建，需重连 WiFi 或整机断电。
+- 必须在家庭 WiFi 下才有 VoWiFi；出门只有普通蜂窝能力，本方案不提供（已证伪）。
+- GSM-only 不防 2G 驻留：当地若仍有 GSM 覆盖，卡可能短暂驻留 2G 并出现 `IN_SERVICE`，
+  WebUI 的注册状态能看到。M0-D 室内 90 秒未见驻留，出门长时段未测。
+- 切换飞行模式或断开 WiFi 会拆掉 IMS PDN 且不会自动重建，需重连 WiFi；
+  基带 IWLAN 状态卡死时只能**整机断电**（`adb reboot` 有时不够）。
+- `mVoiceRegState` / `mDataRegState` 是 Android 聚合后的值，`data` 显示 `IN_SERVICE`
+  可能来自 IWLAN 而不是蜂窝。判断是否驻网看 WebUI 卡片里的 IWLAN 和 `dumpsys` 里的 WWAN 两条。
+- 守护被 `kill -9` 且没人跑 `stop`/`uninstall` 时，卡会留在 GSM-only；存档还在，
+  用上面的手工恢复即可。守护收到 TERM 时只清理退出，不去改卡（在 trap 里调 `cmd phone` 必然失败）。
+- 运营商侧可能要求周期性蜂窝注册，长期只走 WiFi 有被停卡的风险；属于运营策略，模块不解决。
+- 系统/基带升级可能改变 IWLAN 行为，升级后需要复测。
