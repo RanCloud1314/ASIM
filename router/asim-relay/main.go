@@ -46,7 +46,7 @@ var cfgPath string
 const (
 	idleTimeout    = 180 * time.Second
 	noReplyTimeout = 25 * time.Second
-	version        = "0.3.1"
+	version        = "0.4.0"
 )
 
 type flow struct {

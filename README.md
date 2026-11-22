@@ -2,18 +2,18 @@
 
 把一张在中国大陆漫游的海外 SIM 卡（实测 CTExcel 英国卡，234/33）锁到 **GSM-only**，
 让它**不再驻留中国运营商的 LTE/NR 网络**，但 SIM 保持上电，EAP-AKA 仍可用；
-VoWiFi（系统 WiFi Calling）的 IKE/IPsec 由家里的 OpenWrt 路由器转发到英国的 ePDG，
+VoWiFi（系统 WiFi Calling）的 IKE/IPsec 由家里的 OpenWrt 路由器经 mihomo 的 TUN 送到英国的 ePDG，
 于是**光靠家庭 WiFi 就能收短信、打电话**，蜂窝侧全程不注册。
 
 ```
         ┌──────────── 手机 ────────────┐        ┌──────── 家里 OpenWrt ────────┐
-        │ KSU 模块 asim                │        │ asim-relay (Go)             │
-        │  ├ 守护 asimd（每 60s 重施加）│        │  ├ dnsmasq: ePDG → 路由器自己 │
-        │  └ WebUI 状态面板/开关        │        │  └ :500/:4500 收包            │
-        │                              │        └──────────┬──────────────────┘
-        │ 基带 --IKE 500/4500──────────┼───────────────────┘
-        │      （不经过手机 IP 栈）      │                   │ trojan / vless / hy2
-        │ 蜂窝侧: GSM-only, 不注册      │                   ▼
+        │ KSU 模块 asim                │        │ mihomo：TUN asim0            │
+        │  ├ 守护 asimd（每 60s 重施加）│        │  └ 只接管 31.94.76.0/24       │
+        │  └ WebUI 状态面板/开关        │        │ asim-relay (Go)：控制面       │
+        │                              │        │  └ API / 下发节点配置        │
+        │ 基带 --IKE 500/4500──────────┼────────┤                              │
+        │      （不经过手机 IP 栈）      │        └──────────┬──────────────────┘
+        │ 蜂窝侧: GSM-only, 不注册      │                   │ trojan / vless / hy2
         └──────────────────────────────┘        英国节点 → EE ePDG 31.94.76.x
 ```
 
@@ -41,8 +41,13 @@ VoWiFi（系统 WiFi Calling）的 IKE/IPsec 由家里的 OpenWrt 路由器转�
 手机上的模块只负责「不驻网」，VoWiFi 能不能成完全取决于这一步。**先把路由器配好**，
 用手机原生的 WiFi Calling 验通一次（不装模块也能验），再往下做。
 
+数据面是 **mihomo**：它把 `31.94.76.0/24` 收进 TUN（`asim0`）再从英国节点出去，其他流量直连。
+`asim-relay` 只保留控制面 —— WebUI 的 API，并在节点变更时生成 mihomo 配置、热重载。
+mihomo 的安装、firewall、删 dnsmasq 覆盖、验证与回滚都在
+[`router/mihomo/README.md`](router/mihomo/README.md)。
+
 ```sh
-# 1) 开发机上编译（需要 Go）
+# 1) 开发机上编译控制面（需要 Go）
 cd router/asim-relay
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o asim-relay-linux-amd64 .
 
@@ -52,36 +57,28 @@ scp relay.json                root@192.168.100.1:/etc/asim/relay.json
 scp asim-relay.init           root@192.168.100.1:/etc/init.d/asim-relay
 ssh root@192.168.100.1 'chmod 755 /usr/bin/asim-relay /etc/init.d/asim-relay; chmod 600 /etc/asim/relay.json'
 
-# 3) 把 ePDG 域名指到路由器自己（只要一次，写进 /etc/dnsmasq.conf 就持久）
-ssh root@192.168.100.1 "echo 'address=/epdg.epc.mnc033.mcc234.pub.3gppnetwork.org/192.168.100.1' >> /etc/dnsmasq.conf && /etc/init.d/dnsmasq restart"
-
-# 4) 起服务
+# 3) 起服务（会写出 /etc/asim/mihomo/config.yaml），再按 mihomo 的说明装内核
 ssh root@192.168.100.1 '/etc/init.d/asim-relay enable && /etc/init.d/asim-relay restart'
 ```
 
-改 `relay.json` 里的节点地址、密码、`listen_addr`（默认 `192.168.100.1`）。
-可选 `"epdg_ip": "31.94.76.9"` 钉死一个 ePDG 地址，跳过 DoH；不填就每次解析后
-沿用正在用的那个 IP（DoH 答案换序不会切断已建立的 IPsec 会话）。
-节点也可以装好后在 WebUI 里改，不用再登路由器。
-换网段要同时改这里和 dnsmasq 的 `address=`。细节见 [`router/asim-relay/README.md`](router/asim-relay/README.md)。
+改 `relay.json` 里的节点地址、密码即可；节点也可以装好后在 WebUI 里改，保存后立刻写成
+新的 mihomo 配置并热重载。细节见 [`router/asim-relay/README.md`](router/asim-relay/README.md)。
 
 ### 中继装在电脑上（可选）
 
-Release 里有 `asim-relay-windows-amd64.exe` 和 `asim-relay-linux-amd64`。
-把 `relay.json` 的 `listen_addr` / `api_listen` 改成 PC 的局域网 IP 或 `0.0.0.0`，
-手机 WebUI 的「路由器地址」填这台 PC 的地址即可（不填则自动用手机默认网关）。
-Windows 上放行入站 UDP 500/4500 和 TCP 8080。
+Release 里有 `asim-relay-windows-amd64.exe` 和 `asim-relay-linux-amd64`。但数据面在 mihomo，
+PC 部署同样要在这台机器上跑 mihomo 并把手机指过去；这条路没有实测，**路由器才是受支持的目标**。
 
 验证：手机连上家里 WiFi → 打开「WLAN 通话」→ 状态栏出现 WiFi 通话标识、能收短信。
-不通就看路由器 `logread | grep asim-relay` 有没有 `flow ... -> 31.94.76.x:500`。
+不通就看 `ip route show table all | grep 31.94.76`（应有 `dev asim0`）和 mihomo 的 `/connections`。
 
 ## 二、手机：装 KSU 模块
 
 ```powershell
-.\build.ps1                                 # → asim-v0.3.0.zip + 两个平台的 relay（PowerShell 5.1+）
+.\build.ps1                                 # → asim-v0.4.0.zip + 两个平台的 relay（PowerShell 5.1+）
 ```
 
-1. KernelSU 管理器 → 模块 → 安装 `asim-v0.3.0.zip`；
+1. KernelSU 管理器 → 模块 → 安装 `asim-v0.4.0.zip`；
 2. **重启手机**（不是热重载，守护在 `service.sh` 里等 `sys.boot_completed`）；
 3. 模块页点 `WEBUI` 打开控制台。
 
@@ -116,7 +113,7 @@ KernelSU 管理器 → 模块 → ASIM → `WEBUI`。页面每 10 秒自动刷�
 │ [ 使用默认网关 ]                              │
 └──────────────────────────────────────────────┘
 ┌ 路由器中继                                    ┐
-│ 已启用  vless  v0.3.0  延迟 243 ms            │
+│ 已启用  vless  v0.4.0  延迟 243 ms            │
 │ 运行时间    丢包        活跃流                 │
 │ 2 小时 2 分  0          2                     │
 │ 192.168.100.103:41071|4500 → 31.94.76.5:4500 │
@@ -141,7 +138,8 @@ KernelSU 管理器 → 模块 → ASIM → `WEBUI`。页面每 10 秒自动刷�
   它可能来自 IWLAN。判断有没有驻网看 IWLAN 和下面「怎么确认没驻网」。
 - **IWLAN**：`HOME` = VoWiFi 注册成功，这才是你要的绿色状态。
   其它值里 `NOT_REG_OR_SEARCHING` 表示还没连上（刚开机等 1~3 分钟）。
-- **路由器中继**：显示运行时长、丢包、协议、ePDG 地址数和活跃流；`测节点延迟` 会做一次真实 UDP 往返（含握手），花几百毫秒到几秒。
+- **路由器中继**：显示运行时长、丢包、协议、ePDG 地址数和活跃流；数据面切到 mihomo 后
+  「活跃流」恒为 0，真实会话看 mihomo 的 `/connections`。`测节点延迟` 仍会做一次真实 UDP 往返（含握手），花几百毫秒到几秒。
 - **路由器地址**：留空即跟随手机默认网关；中继装在电脑上时填电脑的 LAN 地址。
 - **节点配置**：改协议 / 地址 / 端口 / 密码或 UUID / SNI 后点保存，路由器上立刻生效（监听地址变更除外，需要重启 relay）。VLESS 的传输方式、flow、REALITY 公钥在「高级」里。
 - **操作输出**：每次点按钮的真实 stdout/stderr 都会回显在页面底部，排障先看这里。
@@ -210,8 +208,8 @@ adb shell 'su -c "sh /data/adb/modules/asim/scripts/asimd.sh selftest"'
 - **守护被 `kill -9` 且没人跑 stop/uninstall** 时，卡会留在 GSM-only；存档还在，用上面手工恢复。
 - **运营商可能要求周期性蜂窝注册**，长期只走 WiFi 有被停卡的风险；属运营策略，模块不解决。
 - **系统/基带升级可能改变 IWLAN 行为**，升级后需要复测。
-- WebUI 的「停用中继」会拆掉 VoWiFi 的 IKE 重定向，**回不来可能要重启**，别在等电话时点。
-- **VLESS 内嵌 Xray 引擎，二进制约 32MB**（原 trojan 版约 7MB）；路由器 x86_64 无压力，老 ARM 路由器先看磁盘。
+- WebUI 的「停用中继」只关掉旧的转发路径和 API 里的开关，**不会停 mihomo**，VoWiFi 照常；要真的断网得停 mihomo。
+- **relay 二进制里仍内嵌 Xray 引擎，约 32MB**（为旧的转发路径保留）；路由器 x86_64 无压力，老 ARM 路由器先看磁盘。
 - **Hysteria2 走 QUIC**，被墙或 UDP 被封时测延迟会超时，属网络问题；本地回环已测通。
 - 节点密码/UUID 存在 `relay.json`（0600），改配置时经 LAN 明文 HTTP 传输，和 token 同等级信任，别在不可信网络里用。
 
@@ -219,7 +217,8 @@ adb shell 'su -c "sh /data/adb/modules/asim/scripts/asimd.sh selftest"'
 
 ```
 module/            KSU 模块（nocamp.sh 防驻网、asimd.sh 守护、relay.sh 中继桥、webroot/ WebUI）
-router/asim-relay/ 中继（ePDG IKE/ESP 转发；trojan / vless / hysteria2）
+router/asim-relay/ 控制面（WebUI API + 生成 mihomo 配置并热重载；trojan / vless / hysteria2）
+router/mihomo/     mihomo 的 init 脚本与安装/验证/回滚说明
 m0/                M0 阶段实测记录与结论（为什么是这个方案）
 docs/              交接文档、设计 spec、实施 plan、验收记录
 build.ps1          打包 module/ → asim-vX.Y.Z.zip，并编译两个平台的 relay
@@ -227,6 +226,8 @@ build.ps1          打包 module/ → asim-vX.Y.Z.zip，并编译两个平台的
 
 ## 版本
 
-当前 `v0.3.0`：防驻网 + 守护 + WebUI + 多协议中继（trojan / vless / hysteria2）+ WebUI 改节点/路由器地址/测延迟 + 真机验收。
-中继单独发到 `v0.3.1`：修掉 ePDG IP 只换序就切流、上游会话单向死掉仍挂 180 秒导致的周期性掉线（模块本身无变化）。
+当前 `v0.4.0`：数据面从自研中继换成家里路由器上的 **mihomo**（TUN 只接管 ePDG 的
+`31.94.76.0/24`），`asim-relay` 只留控制面并在节点变更时生成 mihomo 配置、热重载；
+模块本身包含 asimd 的 pid 复用修复，重打了 zip。
+`v0.3.1`/`v0.3.0` 是旧的自研转发路线（已不再使用）。
 逐条验收证据见 [`docs/superpowers/plans/2026-11-22-asim-acceptance.md`](docs/superpowers/plans/2026-11-22-asim-acceptance.md)。

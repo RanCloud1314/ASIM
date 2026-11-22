@@ -7,28 +7,30 @@
 ## 一句话
 
 CTExcel 英国卡（234/33）在中国**永不驻网**，但 SIM 保持上电；在家 WiFi 下系统 VoWiFi 正常工作。
-手机侧 KSU 模块只负责防驻网，VoWiFi 分流在家庭 OpenWrt（或局域网 PC）上（Go 中继 → 英国节点 → EE ePDG）。
+手机侧 KSU 模块只负责防驻网，VoWiFi 分流在家庭 OpenWrt（或局域网 PC）上（mihomo TUN → 英国节点 → EE ePDG；
+Go 中继只保留控制面）。
 
 ## 当前状态
 
 | 部分 | 状态 |
 |---|---|
-| 路由器 `asim-relay`（Go） | ✅ v0.3.1：trojan / vless / hysteria2，已部署到路由器，真机验证 VoWiFi 注册 + IWLAN 通话；`/config` 热更新与 `/ping` 已实测；本轮修掉 ePDG IP 换序切流与死会话挂起（见「掉线根因」） |
+| 路由器 `asim-relay`（Go） | ✅ v0.3.1 只做控制面（`/status` `/ping` `/config`），节点变更时生成 mihomo 配置并热重载 |
+| 路由器 mihomo | ✅ v1.19.34：TUN `asim0` 只接管 `31.94.76.0/24`，数据面已切到它（2026-11-22 23:3x），实机验证见 `docs/VOWIFI-DEBUG.md` |
 | 防驻网选型 | ✅ 定为 **A（GSM-only）**；B 被基带拒绝；C 未测（不做） |
-| KSU 模块 | ✅ v0.3.0：防驻网守护 + WebUI（卡槽/路由器地址/节点配置/延迟）+ 自检 |
+| KSU 模块 | ✅ v0.4.0：防驻网守护 + WebUI（卡槽/路由器地址/节点配置/延迟）+ 自检；含 asimd pid 复用修复 |
 | 手机当前状态 | 两张卡都可正常驻网；adb 在线；slot 1 原值 `user=54151`（NR 已关） |
 
 ## 链路（已验证）
 
 ```
-手机基带 --IKE 500 / ESP-in-UDP 4500--> 路由器 192.168.100.1 (asim-relay)
-        --trojan over TLS--> 英国节点 pokemon888-go.pikaholo.com:56006 --> EE ePDG 31.94.76.x
+手机基带 --IKE 500 / ESP-in-UDP 4500--> 31.94.76.x
+        --(默认网关)--> 路由器 --TUN asim0 (mihomo)--> 英国节点 pokemon888-go.pikaholo.com:56007 --> EE ePDG 31.94.76.x
 ```
 
-- 路由器 dnsmasq 把 `epdg.epc.mnc033.mcc234.pub.3gppnetwork.org` 应答成 `192.168.100.1`；
-- 基带照这个应答把 IKE 发给路由器（**已抓包证明**：`192.168.100.103.40950 > 192.168.100.1.500: isakmp: parent_sa ikev2_init[I]`）；
-- `asim-relay` 自己走 DoH（`dns.alidns.com`）解析真实 ePDG，不受 dnsmasq 覆盖影响；
-- 只有 ePDG 这一个域名的 UDP 被经手，其他流量完全不碰。
+- dnsmasq 不再覆盖 ePDG 域名（旧的 `address=` 行已删），手机解析到真实 `31.94.76.x`；
+- mihomo 的 TUN 只路由 `31.94.76.0/24`，规则 `IP-CIDR,31.94.76.0/24,ASIM-UK,no-resolve`，
+  其余流量 `MATCH,DIRECT`；
+- `asim-relay` 不再转发，只在启动 / `PUT /config` 时写 `/etc/asim/mihomo/config.yaml` 并热重载。
 
 细节见 `m0/M0-C-RESULT.md`、`router/asim-relay/README.md`。
 
@@ -38,7 +40,8 @@ CTExcel 英国卡（234/33）在中国**永不驻网**，但 SIM 保持上电；
 - 路由器：OpenWrt 25.12.6 x86_64（apk 包管理），LAN `192.168.100.1`，`root` / `password`。
   - SSH helper：`python C:\Users\22938\AppData\Local\Temp\opencode\rt\rssh.py "<命令>"`（paramiko；**没有 `timeout` 命令，没有 `curl`**，用 `wget -q -O -`）。
   - 部署 helper：`python C:\Users\22938\AppData\Local\Temp\opencode\rt\deploy.py "<命令>"`（走 exec stdin 传文件，路由器无 sftp-server）。
-- 路由器上已有：`/usr/bin/asim-relay`、`/etc/asim/relay.json`、`/etc/init.d/asim-relay`、`tcpdump`。
+- 路由器上已有：`/usr/bin/asim-relay`、`/etc/asim/relay.json`、`/etc/init.d/asim-relay`、`/usr/bin/mihomo`、`/etc/init.d/mihomo`、`/etc/asim/mihomo/config.yaml`、`tcpdump`。
+- mihomo 控制器：`http://127.0.0.1:9090`（只绑本机，无 secret）。
 - API token：`3f9c1c7a5b2e4d6f8a0b1c2d3e4f5a6b`，`http://192.168.100.1:8080/status`。
 
 ## 卡槽映射（必须记住，踩过坑）
@@ -108,6 +111,10 @@ adb shell 'cmd phone get-allowed-network-types-for-users -s 1'
 
 ## 掉线根因（2026-11-22 晚，v0.3.1）
 
+> 2026-11-22 23:3x 起数据面已换成路由器上的 mihomo（PC 上的 A/B 证明它能撑过 30 分钟
+> 重注册）。本节记录的是换之前对 asim-relay 的排查；换完后的 45 分钟判卷结果见
+> `docs/VOWIFI-DEBUG.md`。
+
 症状：开机后 VoWiFi 正常，约 5–11 分钟后 IMS PDN 被拆（`PREFERRED_DATA_SWITCHED` /
 `CONNECTIVITY_SERVICE_UNWANTED`），voice 变 `OUT_OF_SERVICE`，约 5 分钟后自恢复；WiFi 全程没断。
 
@@ -142,7 +149,8 @@ running」直接退出；`stop` 还会去 kill 那个无关进程。现在 `is_r
 
 ## 下一步
 
-当前唯一的活是查周期性掉线：见 `docs/VOWIFI-DEBUG.md`。
+数据面已切到 mihomo；下一步是看完 45 分钟窗口的判卷结果并把结论写进
+`docs/VOWIFI-DEBUG.md`。
 （`docs/superpowers/plans/2026-11-22-asim.md` 的实施计划已全部落地，只剩验收。）
 
 ## 文件地图
@@ -156,7 +164,8 @@ running」直接退出；`stop` 还会去 kill 那个无关进程。现在 `is_r
 | `m0/M0-B-FINDINGS.md` | 为什么手机侧分流不可行的决定性证据 |
 | `m0/M0-C-RESULT.md` | 路由器中继验证记录 |
 | `m0/M0-D-RESULT.md` | 防驻网三方案实测记录 |
-| `router/asim-relay/` | 路由器 Go 中继源码 + 配置 + init 脚本 |
+| `router/asim-relay/` | 路由器 Go 控制面源码 + 配置 + init 脚本 |
+| `router/mihomo/` | mihomo 的 init 脚本与安装/验证/回滚说明 |
 | `module/` | KSU 模块（当前只有骨架） |
 | `spike/` | 作废路线的留档，不要动 |
 

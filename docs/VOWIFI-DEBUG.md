@@ -7,6 +7,24 @@
 > **注册后 30 分 01 秒**，是第 30 分钟那次定时重注册本身被拒；失败那一秒抓包里
 > **没有丢包/重传/重协商**。现在唯一没查过的链路是「路由器 → 节点」。
 
+## 2026-11-22 23:3x 更新：数据面已换成 mihomo
+
+A/B 的结论是「同出口、mihomo 能过、asim-relay 过不去」，所以不再继续修自研转发：
+
+- 路由器装了 mihomo v1.19.34，TUN `asim0` 只接管 `31.94.76.0/24`；
+- dnsmasq 的 `address=/epdg.../192.168.100.1` 已删除，手机拿到真实 IP；
+- `asim-relay` 只留 API，节点保存时生成 mihomo 配置并热重载；
+- 23:37 手机重启后 CTExcel `PS=HOME`、IMS PDN `CONNECTED`，
+  mihomo `/connections` 显示 `192.168.100.103 -> 31.94.76.10:500` 走 `ASIM-UK`。
+
+**判卷未完成**：23:41 起每 30 秒采样 `voice/iwlan`，23:45 因用户正在使用、主动叫停
+（当时 `voice=IN_SERVICE iwlan=HOME`，稳定约 8 分钟）。第 30 分钟那次重注册**没有观察到结论**。
+有结论前不要宣布修好；如果仍然 403，H4（上游会话形态）排除，问题转运营商侧；
+**不要**切回 relay 试运气。下次观察直接从手机侧 `voice/iwlan` + mihomo `/connections` 看，
+不需要再挂抓包。
+
+部署/回滚步骤见 `router/mihomo/README.md`。
+
 ## 一句话现状
 
 中继（v0.3.1）和手机模块（asimd pid 修复）都已修好并经现场验证；**剩下的唯一问题是
@@ -64,7 +82,7 @@ running」直接退出 → **守护不启动、槽位不锁、WiFi Calling 起�
 （顺带说明：这个 bug 就是之前「重启完 WiFi Calling 不来」的原因，不是运营商。）
 
 **注意：模块版本号还是 v0.3.0，没重打 zip。** 已发布的 `asim-v0.3.0.zip` 仍带这个 bug，
-从 Release 重装会复现。手机本地已修。
+从 Release 重装会复现。手机本地已修；`v0.4.0` 的 zip 已包含修复。
 
 ## 没解决的问题：周期性 `403 Registration_Error14`
 
@@ -196,6 +214,9 @@ H4 与恢复策略正交：查 H4 看**路由器 WAN 抓包**，查 H1/H2 看**�
 
 ## 下一步（按顺序做，别跳）
 
+> 数据面已换成 mihomo。下面第 1 条只在要单独回答 H4 时才需要；正常判卷看手机侧和
+> mihomo `/connections` 就够。第 2 条的代码改动已不再适用（旧转发路径不再收流量）。
+
 1. **先补上唯一没抓过的链路：路由器 WAN 口 → 节点。** 下一轮测试时同时挂：
 
    ```sh
@@ -227,11 +248,12 @@ H4 与恢复策略正交：查 H4 看**路由器 WAN 抓包**，查 H1/H2 看**�
 
 **不要**按 5 分钟间隔去推，也不要连续试 —— 实测会一直撞 403。
 
-## 备选方向：路由器上直接用 mihomo 内核
+## 已采用：路由器上直接用 mihomo 内核（2026-11-22）
 
-A/B 已经把「出口」排除、把差异收窄到**传输实现**。所以除了改 asim-relay，还有一条更省事的
-验证路线：在路由器上跑 mihomo（TUN 或 redir 都行），把 ePDG 的 UDP 500/4500 交给它，
-asim-relay 只保留业务 API。
+A/B 已经把「出口」排除、把差异收窄到**传输实现**。所以没有继续改 asim-relay，而是
+在路由器上跑 mihomo（TUN），把 ePDG 的 UDP 500/4500 交给它，asim-relay 只保留业务 API。
+实施细节见 `router/mihomo/README.md`，设计与计划见
+`docs/superpowers/specs/2026-11-22-mihomo-data-path-design.md`。
 
 - 优点：mihomo 是唯一被证明能撑过 30 分钟刷新的实现，直接拿它当参照/兜底，不用先猜我们哪行写错。
 - 代价：路由器要有足够内存跑 mihomo + 规则；`domain`/`epdg_ip` 那套逻辑得换个方式接。
@@ -270,7 +292,7 @@ adb shell 'su -c "for p in \$(ls /proc | grep -E \"^[0-9]+\$\"); do c=\$(tr \"\\
 python C:\Users\22938\AppData\Local\Temp\opencode\rt\rssh.py "date; logread | grep -i asim-relay | tail -20"
 python C:\Users\22938\AppData\Local\Temp\opencode\rt\rssh.py "sha256sum /usr/bin/asim-relay; uptime"
 python C:\Users\22938\AppData\Local\Temp\opencode\rt\rtget.py /tmp/x.pcap $env:TEMP\x.pcap
-python C:\Users\22938\AppData\Local\Temp\opencode\rt\rtsend.py <本地文件> <远端路径>
+python C:\Users\22938\AppData\Local\Temp\opencode\rt\rtsend.py <远端路径> <本地文件>
 
 # 手机侧抓 IKE/ESP（-G 600 每 10 分钟切一个文件，403 落在哪段要按时间找）
 adb shell 'su -c "rm -f /data/local/tmp/ike-*.pcap; setsid tcpdump -U -i wlan0 -n -s 0 -w /data/local/tmp/ike-%Y%m%d-%H%M%S.pcap -G 600 -W 60 \"udp and (port 500 or port 4500)\" </dev/null >/data/local/tmp/tcpdump.out 2>&1 &"'
@@ -329,16 +351,15 @@ Invoke-RestMethod -Uri 'http://192.168.100.1:8080/status' -Headers $h
 
 ## 代码状态
 
-- 仓库 `master` 已与 `origin/master` 同步（`3293861`）。
-- Release `v0.3.1`：只发 2 个二进制（`asim-relay-linux-amd64` 32444576、
-  `simas-relay-windows-amd64.exe` 31631360），**没重打模块 zip**。
-- 路由器磁盘二进制 = Release 同一份 = 现在运行的进程（`20:06` 重启后已对齐）。
-- 待办：模块升版本 + 重打 `asim-v0.3.x.zip`（修了 pid 复用的那份）。
+- Release `v0.4.0` 发 3 件：`asim-v0.4.0.zip`（模块，含 asimd pid 复用修复）、
+  `asim-relay-linux-amd64`（32391328）、`asim-relay-windows-amd64.exe`（31581184）。
+- 路由器上跑的是 23:36 那版二进制（同源代码，`version` 字段还是 `0.3.1`），**没有跟着重装**：
+  重装会触发 mihomo 热重载、拆掉当前 ePDG 会话；等下次维护窗口或出问题时再对齐。
 - **线上配置变更（重要）**：`/etc/asim/relay.json` 的 `node.port` 已于 22:12 通过
   `PUT /config` 热切到 **56007**，并已落盘（重启不会回退）。`56006` 只在文档历史里出现。
-  热切会 `killFlows`，但监听 500/4500 与手机侧配置都没动。
-- 未做的代码改动：**500/4500 合并成一条上游会话**、给 4500 加主动心跳/放宽 `idleTimeout`
-  （见下一步第 2 条）。
+- 旧的自研转发路径仍留在代码里（`listen_addr` 500/4500），但 dnsmasq 不再指向路由器，
+  所以没有流量。原先计划的「500/4500 合并成一条上游会话」「4500 心跳」**不再需要**，
+  除非要退回自研转发。
 
 ## 取证产物（本轮，2026-11-22 22:15–23:00）
 
