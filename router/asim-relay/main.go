@@ -28,6 +28,7 @@ import (
 
 type Config struct {
 	Domain     string `json:"domain"`
+	EpdgIP     string `json:"epdg_ip"` // 非空时钉死这个 ePDG IP，不再走 DoH
 	ListenAddr string `json:"listen_addr"`
 	ListenPort []int  `json:"listen_ports"`
 	Node       Node   `json:"node"`
@@ -39,8 +40,9 @@ type Config struct {
 var cfgPath string
 
 const (
-	idleTimeout = 180 * time.Second
-	version     = "0.3.0"
+	idleTimeout    = 180 * time.Second
+	noReplyTimeout = 25 * time.Second
+	version        = "0.3.1"
 )
 
 type flow struct {
@@ -51,6 +53,7 @@ type flow struct {
 	stop     chan struct{}
 	once     sync.Once
 	lastSeen atomic.Int64
+	lastRecv atomic.Int64
 	dst      string
 }
 
@@ -143,15 +146,44 @@ func (r *relay) resolver() {
 func (r *relay) resolveOnce() {
 	r.cfgMu.RLock()
 	domain := r.cfg.Domain
+	pin := r.cfg.EpdgIP
 	r.cfgMu.RUnlock()
-	ips, err := resolveDoH(domain)
-	if err != nil {
-		log.Printf("resolve %s: %v", domain, err)
-		return
+
+	var ips []netip.Addr
+	if pin != "" {
+		ip, err := netip.ParseAddr(pin)
+		if err != nil {
+			log.Printf("epdg_ip %q: %v", pin, err)
+			return
+		}
+		ips = []netip.Addr{ip}
+	} else {
+		var err error
+		ips, err = resolveDoH(domain)
+		if err != nil {
+			log.Printf("resolve %s: %v", domain, err)
+			return
+		}
+		// DoH 每次返回的 IP 顺序会轮转，换序不代表旧 IP 失效：正在用的 IP
+		// 只要还在答案集里就继续用它，否则一条正常的 IPsec 会话会被切断。
+		if cur, ok := r.currentEpdg(); ok {
+			for i, ip := range ips {
+				if ip == cur {
+					ips[0], ips[i] = ips[i], ips[0]
+					break
+				}
+			}
+		}
 	}
-	if p := r.epdg.Load(); p == nil || !sameAddrs(*p, ips) {
+
+	prev, had := r.currentEpdg()
+	old := r.epdg.Load()
+	r.epdg.Store(&ips)
+	if !had || !sameAddrs(*old, ips) {
 		log.Printf("epdg %s -> %v", domain, ips)
-		r.epdg.Store(&ips)
+	}
+	if had && prev != ips[0] {
+		log.Printf("epdg switch %s -> %s, dropping existing flows", prev, ips[0])
 		r.killFlows()
 	}
 }
@@ -203,6 +235,7 @@ func (r *relay) dispatch(conn *net.UDPConn, client *net.UDPAddr, port int, paylo
 	f := r.flows[key]
 	if f == nil {
 		f = &flow{client: client, port: port, conn: conn, ch: make(chan []byte, 32), stop: make(chan struct{})}
+		f.lastRecv.Store(time.Now().Unix()) // 计时基准：建流时刻，避免被误判成「很久没回包」
 		r.flows[key] = f
 		go r.runFlow(key, f)
 	}
@@ -215,6 +248,12 @@ func (r *relay) dispatch(conn *net.UDPConn, client *net.UDPAddr, port int, paylo
 	default:
 		r.drops.Add(1) // 队列满就丢，IKE 自己会重传
 	}
+}
+
+// stalled 判断一条流是否「只发不收」：上游 UDP 关联会静默过期，写仍然成功，
+// 但回包永远不来；这种会话必须拆掉重建，否则手机会一直往黑洞里重传。
+func stalled(sent, recv, now int64) bool {
+	return sent > recv && now-recv > int64(noReplyTimeout/time.Second)
 }
 
 func (r *relay) runFlow(key string, f *flow) {
@@ -244,9 +283,11 @@ func (r *relay) runFlow(key string, f *flow) {
 		for {
 			p, err := sess.Read()
 			if err != nil {
-				sess.Close()
+				log.Printf("flow %s: read: %v", key, err)
+				f.shutdown() // 让主循环立刻 dropFlow，下一个包重开会话
 				return
 			}
+			f.lastRecv.Store(time.Now().Unix())
 			f.conn.WriteToUDP(p, f.client)
 		}
 	}()
@@ -255,11 +296,17 @@ func (r *relay) runFlow(key string, f *flow) {
 		select {
 		case p := <-f.ch:
 			if err := sess.Write(p); err != nil {
+				log.Printf("flow %s: write: %v", key, err)
 				return
 			}
 			f.lastSeen.Store(time.Now().Unix())
-		case <-time.After(30 * time.Second):
+		case <-time.After(10 * time.Second):
 			if time.Since(time.Unix(f.lastSeen.Load(), 0)) > idleTimeout {
+				return
+			}
+			sent, recv := f.lastSeen.Load(), f.lastRecv.Load()
+			if stalled(sent, recv, time.Now().Unix()) {
+				log.Printf("flow %s: no reply for %ds, recycling", key, int(time.Since(time.Unix(recv, 0)).Seconds()))
 				return
 			}
 		case <-f.stop:
@@ -339,10 +386,11 @@ func (r *relay) handleConfig(w http.ResponseWriter, req *http.Request) {
 		json.NewEncoder(w).Encode(cfg)
 	case http.MethodPut:
 		var in struct {
-			Node       *Node  `json:"node"`
-			Domain     string `json:"domain"`
-			Enabled    *bool  `json:"enabled"`
-			ListenAddr string `json:"listen_addr"`
+			Node       *Node   `json:"node"`
+			Domain     string  `json:"domain"`
+			EpdgIP     *string `json:"epdg_ip"`
+			Enabled    *bool   `json:"enabled"`
+			ListenAddr string  `json:"listen_addr"`
 		}
 		if err := json.NewDecoder(io.LimitReader(req.Body, 1<<20)).Decode(&in); err != nil {
 			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
@@ -357,12 +405,16 @@ func (r *relay) handleConfig(w http.ResponseWriter, req *http.Request) {
 		restart := false
 		r.cfgMu.Lock()
 		oldDomain := r.cfg.Domain
+		oldPin := r.cfg.EpdgIP
 		oldNode := r.cfg.Node.signature()
 		if in.Node != nil {
 			r.cfg.Node = *in.Node
 		}
 		if in.Domain != "" {
 			r.cfg.Domain = in.Domain
+		}
+		if in.EpdgIP != nil {
+			r.cfg.EpdgIP = *in.EpdgIP
 		}
 		if in.Enabled != nil {
 			r.cfg.Enabled = *in.Enabled
@@ -375,6 +427,7 @@ func (r *relay) handleConfig(w http.ResponseWriter, req *http.Request) {
 		}
 		newNode := r.cfg.Node.signature()
 		domain := r.cfg.Domain
+		pin := r.cfg.EpdgIP
 		enabled := r.cfg.Enabled
 		r.cfgMu.Unlock()
 
@@ -383,11 +436,11 @@ func (r *relay) handleConfig(w http.ResponseWriter, req *http.Request) {
 			r.closeEngines()
 			log.Printf("node updated via api: %s", r.cfgHost())
 		}
-		if domain != oldDomain {
+		if domain != oldDomain || pin != oldPin {
 			r.epdg.Store(nil)
 			r.killFlows()
 			go r.resolveOnce()
-			log.Printf("domain updated via api: %s", domain)
+			log.Printf("epdg updated via api: domain=%s ip=%q", domain, pin)
 		}
 		r.on.Store(enabled)
 		if !enabled {
@@ -464,6 +517,7 @@ func (r *relay) writeStatus(w http.ResponseWriter) {
 		"enabled":   r.on.Load(),
 		"version":   version,
 		"domain":    cfg.Domain,
+		"epdg_ip":   cfg.EpdgIP,
 		"protocol":  cfg.Node.proto(),
 		"epdg_ips":  ips,
 		"uptime_s":  int(time.Since(r.start).Seconds()),

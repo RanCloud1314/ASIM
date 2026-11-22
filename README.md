@@ -60,6 +60,8 @@ ssh root@192.168.100.1 '/etc/init.d/asim-relay enable && /etc/init.d/asim-relay 
 ```
 
 改 `relay.json` 里的节点地址、密码、`listen_addr`（默认 `192.168.100.1`）。
+可选 `"epdg_ip": "31.94.76.9"` 钉死一个 ePDG 地址，跳过 DoH；不填就每次解析后
+沿用正在用的那个 IP（DoH 答案换序不会切断已建立的 IPsec 会话）。
 节点也可以装好后在 WebUI 里改，不用再登路由器。
 换网段要同时改这里和 dnsmasq 的 `address=`。细节见 [`router/asim-relay/README.md`](router/asim-relay/README.md)。
 
