@@ -16,7 +16,7 @@ CTExcel 英国卡（234/33）在中国**永不驻网**，但 SIM 保持上电；
 | 路由器 `asim-relay`（Go） | ✅ 已编译、已部署到路由器、已 `enable`，真机验证 VoWiFi 注册成功 + 一通 IWLAN 通话 |
 | 防驻网选型 | ✅ 定为 **A（GSM-only）**；B 被基带拒绝；C 未测（不做） |
 | KSU 模块 | ❌ 只有骨架（`module/module.prop` + `README.md`），脚本 / 守护 / WebUI 全待写 |
-| 手机当前状态 | 网络类型已恢复原值 `user=840583`，两张卡都可正常驻网；adb 在线 |
+| 手机当前状态 | 两张卡都可正常驻网；adb 在线；slot 1 原值 `user=54151`（NR 已关） |
 
 ## 链路（已验证）
 
@@ -64,8 +64,15 @@ cmd phone get-allowed-network-types-for-users -s 1   # 返回展示名，人读�
 cmd phone set-allowed-network-types-for-users -s 1 1000000000000000   # GSM-only
 ```
 
-本机原值：`user=840583` = `11001101001110000111` = `GPRS|EDGE|UMTS|HSDPA|HSUPA|HSPA|LTE|HSPA+|GSM|LTE_CA|NR`。
-**任何恢复操作都必须写回这个精确值，不要用「全选」之类的近似。**
+各槽的原值**不同，必须以现场读数为准**（2026-11-22 实测）：
+
+| slot | 卡 | `user=` | 二进制 |
+|---|---|---|---|
+| 0 | 联通 / Lebara | `840583` | `11001101001110000111`（含 NR） |
+| 1 | CTExcel | `54151` | `1101001110000111`（**NR 已关**） |
+
+**任何恢复操作都必须写回该槽当时的精确值，不要用「全选」或别的槽的值。**
+模块的做法是 lock 前把现场值存进 `/data/adb/asim/slot<slot>.mask`，unlock 时按存档恢复。
 
 ### 三种防驻网方案
 
@@ -91,7 +98,11 @@ cmd phone set-allowed-network-types-for-users -s 1 1000000000000000   # GSM-only
 ### 恢复原值（手工应急）
 
 ```sh
-adb shell 'su -c "cmd phone set-allowed-network-types-for-users -s 1 11001101001110000111"'
+# 优先：走模块自己的存档恢复（最准确的「原值」）
+adb shell 'su -c "sh /data/adb/modules/asim/scripts/nocamp.sh unlock 1"'
+
+# 没有存档时（例如模块已被删）：手写该槽的原值，slot 1 当前是 54151
+adb shell 'su -c "cmd phone set-allowed-network-types-for-users -s 1 1101001110000111"'
 adb shell 'cmd phone get-allowed-network-types-for-users -s 1'
 ```
 

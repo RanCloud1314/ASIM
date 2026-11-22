@@ -1,0 +1,2 @@
+# Everything under module/ runs on Android: it must keep LF endings.
+module/** text eol=lf
