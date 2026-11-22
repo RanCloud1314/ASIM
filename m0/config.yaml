@@ -1,0 +1,34 @@
+# M0 smoke config — minimal TUN, single UK trojan node, no rules.
+mixed-port: 7891
+allow-lan: false
+mode: global
+log-level: info
+ipv6: false
+interface-name: wlan0
+dns:
+  enable: true
+  ipv6: false
+  default-nameserver: [223.5.5.5]
+  nameserver: [223.5.5.5]
+tun:
+  enable: true
+  stack: system
+  device: asim0
+  auto-route: false
+  auto-detect-interface: true
+  dns-hijack: []
+proxies:
+  - name: UK01
+    type: trojan
+    server: pokemon888-go.pikaholo.com
+    port: 56006
+    password: a24d95eb-e678-448d-a098-1a1248927c31
+    udp: true
+    sni: iosapps.itunes.apple.com
+    skip-cert-verify: true
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [UK01]
+rules:
+  - MATCH,PROXY
