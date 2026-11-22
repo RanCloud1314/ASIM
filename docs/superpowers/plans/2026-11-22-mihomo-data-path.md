@@ -439,6 +439,10 @@ Expected: 有 `31.94.76.x` 的会话（UDP 500/4500）。没有就停下排查�
 
 ### Task 4: 45 分钟验收窗口
 
+> **未完成（2026-11-22 23:45 用户叫停）**：Step 1–3 已执行，手机在注册约 8 分钟内
+> `voice=IN_SERVICE` / `iwlan=HOME` 稳定；用户要继续使用，监控与采样由用户主动停止，
+> Step 4 判卷没有结论。下次接着做就是重跑 Task 4，不需要改代码。
+
 **Files:** 无；记录写进 Task 5 的文档。
 
 - [ ] **Step 1: 记录基线**
@@ -475,6 +479,9 @@ adb shell "dumpsys telephony.registry | grep -oE 'voice=[A-Z_]+|iwlan=[A-Z_]+' |
 ---
 
 ### Task 5: 文档收口
+
+> **已完成（commit `c71a501`，随 v0.4.0 一起发布）**；额外补了 `README.md` 与
+> `module/module.prop` 的版本号。
 
 **Files:**
 - Modify: `docs/HANDOFF.md`（链路图、当前状态、文件地图）
