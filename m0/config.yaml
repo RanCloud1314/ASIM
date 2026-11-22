@@ -15,7 +15,13 @@ tun:
   stack: system
   device: asim0
   auto-route: false
-  auto-detect-interface: true
+  auto-detect-interface: false
+  inet4-route-address:
+    - 31.94.76.2/32
+    - 31.94.76.5/32
+    - 31.94.76.6/32
+    - 31.94.76.9/32
+    - 31.94.76.10/32
   dns-hijack: []
 proxies:
   - name: UK01

@@ -1,135 +1,118 @@
-# ASIM 设计文档 — 海外卡 VoWiFi 代理路由 KSU 模块
+# ASIM 设计文档 — 海外卡防驻网 + 路由器侧 VoWiFi 分流
 
-日期：2026-11-22
-状态：待确认（spike 已验证核心链路）
+日期：2026-11-22（v2，M0-B 实测后重构）
+状态：已确认架构方向，待路由器侧验证
 
 ## 背景与目的
 
 用户人在中国，手机（小米 12S Pro / unicorn，Android 17，KernelSU 3.4.2）插两张卡：
-- 卡 1（slot 1）：CTExcel（中国电信英国，IMSI 234/33，跑 EE 网络），签约支持 VoWiFi，但用户希望它**永不漫游驻网**（省漫游费），只通过 WiFi 通话收发短信/电话；
-- 卡 2（slot 0）：中国联通 46001，正常使用。
 
-问题：CTExcel 的 ePDG（`epdg.epc.mnc033.mcc234.pub.3gppnetwork.org`，EE 的 VoWiFi 网关）从中国直连不可达/不可用，需要把这张卡产生的 VoWiFi 流量经英国出口节点转发；同时手机上其他一切流量（联通卡数据、所有 App、用户已装的代理 App）完全不受影响。
+- 卡 1（slot 1）：CTExcel（中国电信英国，IMSI 234/33，EE 网络），签约支持 VoWiFi，但必须**永不漫游驻网**（省漫游费、避免被运营商风控），只通过 WiFi 通话收发短信；
+- 卡 2（slot 0）：中国联通 46001，正常使用，**不得受任何影响**。
 
-**Spike 已验证（2026-11-20/21）**：飞行模式 + 连接 PC 热点（PC Clash Verge 走英国节点）时，系统自带 WFC 成功注册 IMS，电话短信可用。Clash 日志证实 ePDG 的 IKE（UDP 500/4500）就是普通 wlan 流量；`ip xfrm state` 证实本机为软件 IWLAN（AP 侧内核 IPsec，SA 端口 4500 NAT-T，系统对 IWLAN 流量打 fwmark 0x20000，ip rule 优先级 9999 强制查 wlan0 表）。
+问题分两半：
+
+1. CTExcel 的 ePDG（`epdg.epc.mnc033.mcc234.pub.3gppnetwork.org`，EE 的 VoWiFi 网关）从中国直连不可达，需要经英国出口；
+2. 该卡不能被允许注册到中国基站。
+
+## 关键实测结论（M0-A / M0-B，2026-11-22）
+
+| 结论 | 证据 |
+|---|---|
+| **系统 IWLAN 的 IKE/IPsec 由基带（modem）执行，不经过 Android/Linux 的 IP 栈** | 隧道在线时 `/proc/net/udp{,6}` 无 500/4500 socket、`ip xfrm state` 为空、`/proc/net/xfrm_stat` 全零；APK `vendor.qti.iwlan` 只有 dex，无任何 IKE 原生库；`imsd` 通过 QMI `PDP_ACTIVATE(RAT=IWLAN)` 让基带建 PDN |
+| **手机上的任何代理都抓不到 ePDG 流量** | 隧道在线时对 ePDG 的 fake-ip 加 `ip rule ... blackhole`，90 秒后 `rmnet_data1` 仍 UP、IMS 仍 `WLAN: IWLAN, HOME`（隧道包不进内核 FIB） |
+| **基带自己做 DNS 解析 ePDG**（用 AP 下发的 DNS 服务器） | PC 热点 + Clash 时基带拿到 fake-ip `198.18.0.41` 并成功建链；手机 `/system/etc/hosts` 对基带无效 |
+| **基带 IWLAN 注册状态跨 AP 重启存活，只有整机断电才清** | 14:58 AP 重启后基带仍报 `WLAN: IWLAN, HOME` 但 `rmnet_data1` DOWN，此后拒绝重建 PDN；15:07 断电重启后 20 秒内自动建链 |
+| **LAN 侧代理对系统 WFC 完全有效** | spike：手机连 PC 热点（PC Clash 走英国节点），系统 WFC 注册成功、通话短信可用；M0-B 复现，IMS `WLAN: IWLAN, HOME` |
+| 订阅的英国 trojan 节点支持 UDP | 上述两次真实 IKE/ESP 都经它成功建链 |
+
+**由此确定的硬边界：拦截点必须在手机 IP 栈之外。** 纯手机方案（TUN / ip rule / VpnService / 全局代理）对系统 WFC 一律无效；手机 hosts 也无效。
 
 ## 目标
 
-1. 去掉 PC：手机端独立完成"CTExcel 卡 VoWiFi 流量 → 英国节点 → ePDG"。
-2. 双卡并存：联通卡的蜂窝与日常流量零波及。
-3. 系统原生体验：系统拨号器/短信直接可用（不自己实现 IMS 栈）。
-4. 全运营商通用：ePDG 地址由 SIM 的 IMSI 按公式推导，不是 CTExcel 特化。
-5. KSU 模块形态：安装即用，WebUI 管理。
+1. **防驻网（手机模块，核心交付）**：勾选的卡永不注册到任何基站，同时 SIM 保持上电以支持 EAP-AKA；取消勾选 / 停用模块 / 卸载时完整恢复原状态。
+2. **VoWiFi 可用（家庭 WiFi 场景）**：在家里 WiFi 下 CTExcel 的 WFC 正常注册、可收发短信/通话；实现方式是在**家庭路由器**上把 ePDG 流量分流到英国节点。
+3. 双卡并存：联通卡的蜂窝与日常流量零波及。
+4. 系统原生体验：系统拨号器/短信直接可用（不自己实现 IMS 栈）。
+5. KSU 模块形态：安装即用，WebUI 管理；路由器侧提供可直接粘贴的配置片段。
 
 ## 非目标（明确不做）
 
-- 不实现软件 ePDG 客户端 / IMS 栈（SWu-IKEv2 路线已备好但不在本项目，除非轻量路线失效才启用；spike 代码在 `spike/` 留档）。
-- 不管理手机上其他代理流量（用户已有 Clash 客户端）。
-- 不做 eSIM 管理、双卡切换 UI 之类的"SIM 管理器"大而全功能。
-- 不承诺紧急呼叫（E911 地址等由运营商 WFC 自带逻辑处理）。
-
-## 关键事实（实测依据）
-
-| 事实 | 来源 |
-|---|---|
-| VoWiFi = IKEv2/IPsec to ePDG，UDP 500/4500 + ESP(NAT-T) | `ip xfrm state`（SA: espinudp sport 4500） |
-| 软件 IWLAN：xfrm 在 AP 内核，流量 uid 1000（system_server），mark 0x20000 | `ip rule`：9999 fwmark 0x20000/0xfffff lookup wlan0 |
-| ePDG FQDN 由 IMSI 推导：`epdg.epc.mnc<MNC0pad3>.mcc<MCC>.pub.3gppnetwork.org` | 3GPP TS 23.003 + Clash 日志实测 |
-| 出口 IP 必须落地英国（EE 侧 geo 检查的假说，spike 中英国节点成功，未测其他国家） | spike |
-| 少数运营商经 CarrierConfig 覆盖 ePDG 地址 | AOSP 文档；**本机实测 `cmd phone cc get-value` 被 SELinux 拒绝（shell 与 ksu 域均拒），v1 只用公式推导，CarrierConfig 覆盖场景（主要是部分美国运营商）列为后续项** |
-| IMS SIP/RTP 全部封装在 IPsec 隧道内（tunnel mode），只需路由外层包 | `ip xfrm state` mode tunnel |
-| KSU root 域可以增删 `ip rule`（add 用 `to X pref N table T`，删除用 `ip rule del pref N`） | 2026-11-22 实测：add/del 均成功 |
+- 不做手机端 IKE/TUN/ip rule 分流（已实测无效，见上）。
+- **不支持"蜂窝数据作为 WFC 底座"**（原 v1 硬性要求，已证伪）：基带 IKE 走蜂窝时同样绕过手机 IP 栈，手机侧无处拦截；出门不在家庭 WiFi 时没有 VoWiFi。
+- 不实现软件 ePDG 客户端 / IMS 栈（SWu 路线留档在 `spike/`，仅当 1、2 都做不成才考虑）。
+- 不做 eSIM 管理、SIM 切换 UI。
+- 不承诺紧急呼叫。
 
 ## 架构
 
 ```
-                 ┌──────────────── 手机 ────────────────┐
-系统 IWLAN 栈 ──IKE/ESP──→ ePDG 真实 IP                 │
-   (uid 1000, mark 0x20000)                             │
-        │ dst=ePDG 的 ip rule (pref < 9999)            │
-        ▼                                               │
-  ASIM mihomo 实例 (root, TUN, 只含 ePDG 路由)          │
-        │ trojan (UK node)                              │
-        ▼ 经系统默认网络(wifi/蜂窝)                      │
-   🇬🇧 节点 → EE ePDG → IMS 注册                        │
-                                                       │
-联通卡蜂窝数据、其他 App、用户代理 App：全部原路 ────────┘
+        ┌──────────── 家庭局域网 ────────────┐
+手机    │                                    │
+ ├─ 基带 IWLAN IKE/ESP ──wlan0──→ 路由器 ──┐ │
+ │   (dst=ePDG, 由基带 BSD 栈发出)          │ │
+ │                                          ▼ │
+ │                              mihomo/sing-box（UK 节点）
+ │                                          │ │
+ │                                          ▼ │
+ │                                    🇬🇧 EE ePDG → IMS 注册
+ │                                            │
+ └─ 联通卡蜂窝 / 其他 App：路由器不干预 ──────┘
+
+手机侧（KSU 模块）只做一件事：让 CTExcel 无法驻网，
+并展示 IMS 注册状态、一键恢复。
 ```
 
 ### 组件
 
-1. **mihomo（root 常驻）**：模块自带静态 arm64 二进制。TUN 模式，`inet4-route-address` 仅包含当前解析出的 ePDG IP 集合；出站走用户订阅里的指定节点（默认英国01/02，可换）。配置由守护进程生成，不含用户其他分流规则。
-2. **asimd（守护进程，脚本即可）**：
-   - 枚举在用 SIM（`dumpsys isub`），按公式推导每张卡的 ePDG FQDN（含 CarrierConfig 覆盖检查 `cmd phone cc get-value`）；
-   - 周期解析 FQDN → IP（v4/v6），变化时更新 mihomo 的 TUN 路由并重载；
-   - 维护分流：`ip rule add to <epdg_ip> pref 9000 table <mihomo_tun_table>`（优先级压过系统 9999），保证系统 mark 的 IKE 包也被 TUN 截获；对称删除；
-   - 只处理用户勾选的卡槽（WebUI 配置），默认只勾选 CTExcel 所在槽。
-3. **WebUI（KSU 标准 webroot）**：卡槽列表与勾选、节点选择（列出订阅节点）、状态面板（ePDG 当前 IP、TUN 是否存活、IMS 注册状态——读 `dumpsys telephony.registry`）、启动/停止、日志查看。
+1. **路由器侧（OpenWrt，用户已有）**：mihomo（或 sing-box）以 TUN/TPROXY 方式接管本机转发的 UDP/TCP，规则只命中 ePDG：
+   - `DOMAIN-SUFFIX,3gppnetwork.org,🇬🇧英国`
+   - `IP-CIDR,31.94.76.0/24,🇬🇧英国`（EE ePDG 段，兜底）
+   - 其余 `DIRECT`。
+   - 手机把路由器当 DNS（DHCP 默认即是），fake-ip 由路由器 mihomo 提供，基带解析 ePDG 时拿到假 IP，流量自然进路由器代理。
+   - 需开启 DNS 劫持（`dns-hijack: any:53`）与 UDP 转发，节点须 `udp: true`。
+2. **`nocamp.sh`（手机模块核心）**：`lock <slotId> <mode>` / `unlock <slotId>`，改 `set-allowed-network-types-for-users`（或手动选网），原值存档；`uninstall.sh` 与 `asimd.sh stop` 必调 unlock。
+3. **`asimd.sh`**：轻量守护，仅维护防驻网状态（防止系统更新/重启后 mask 被重置）、写 `state.json`（各卡 reg 状态、IMS 注册状态、mask 当前值）。
+4. **WebUI**：卡槽勾选、防驻网模式选择（A/B/C）、状态面板、一键恢复、日志。
 
-### 时序（关键路径）
+### 时序
 
-1. 开机/启动模块 → mihomo 起 TUN（初始空路由）→ asimd 解析 ePDG IP → 写入路由与 ip rule。
-2. 系统 WFC 发起 IKE（dst=ePDG）→ dst 命中我们的 ip rule（pref 9000）→ 进 TUN → 英国节点 → ePDG。
-3. IPsec 建立 → IMS 注册（系统自己完成）→ 电话/短信可用。
-4. ePDG IP 轮换/网络切换 → asimd 重新解析更新；若节点不可用 → WebUI 告警。
+1. 开机 → `service.sh` 读配置 → 对勾选槽执行 `nocamp.sh lock` → 写状态。
+2. 手机连家庭 WiFi → 基带解析 ePDG（路由器 DNS 返回 fake-ip）→ IKE 经路由器 → 英国节点 → ePDG → IMS 注册（系统自己完成）。
+3. 路由器规则变更 / 节点切换 → 基带自身重连逻辑会在几分钟内重试。
 
 ## 方案取舍
 
-- **轻量路由方案（选定）**：复用系统 WFC 栈，只做流量路由。工程量小（≈1 个模块 + 守护脚本 + WebUI），spike 已端到端验证。
-- **软件 VoWiFi 方案（备而未选）**：SWu-IKEv2 + 自定义 ImsService（krazey/ims 路线）。可摆脱对系统 WFC 的依赖（比如运营商不放开 WFC 时），但要实现 IKE+IMS 全栈，风险与工程量高一个数量级。`spike/` 中已留 AKA 鉴权桥（SimAuthServer）与 vowifi_gateway 客户端代码。
-- **PC/路由器级分流（否决）**：不能出门使用，已否决。
+- **路由器侧分流 + 手机侧只防驻网（选定）**：改动最小，已在 PC 热点上端到端验证；手机模块只碰 `set-allowed-network-types-for-users`，风险面最小，卸载即恢复。
+- **手机端 TUN + ip rule（已证伪，作废）**：基带 IKE 不进内核，方案不成立。
+- **手机端 UDP 中继 + hosts（作废）**：基带不读 hosts；且改 DNS 也必须落到外部设备，无法带来"纯手机"收益。
+- **软件 VoWiFi / SWu（备而不选）**：纯手机可行（IKE 在用户态，能被代理），但需自建 AKA+IKEv2+ESP+IMS 全栈，工程量高一个数量级。
 
 ## 用户已定的决策
 
-- 出口协议与节点：mihomo + 用户机场订阅（trojan 英国节点）。
-- 手机：小米 12S Pro，Android 17，KSU。
-- 目标卡：CTExcel（另一张联通卡不得受影响）。
-- **硬性要求：与用户日常代理 App（Clash 类，VpnService 模式）同时在线工作**，不得要求关闭。
-- **硬性要求：WFC 底座网络既可以是 WiFi，也可以是联通卡的蜂窝数据**（v1 验收，对应验收 #3）。
-- **硬性要求：一旦某张卡被勾选接管，模块必须阻止该卡与基站注册**（防国际漫游驻网），同时 SIM 保持上电可鉴权（WFC 依赖 AKA），WebUI 取消勾选或模块停用时恢复原状。实现三选一（M0 实测定默认，WebUI 可切换）：A. `cmd phone set-allowed-network-types-for-users` 限制到 GSM-only（国内多数地区 2G 已退网）；B. bitmask 0（若被接受）；C. 手动选网锁定到不可用 PLMN。不能使用 `disable-physical-subscription`：它会断电 UICC，AKA 无法进行。
-
-### 共存设计依据（以上两条如何成立）
-
-- VpnService 抓不到 uid 1000（system_server/iwlan）的流量，用户日常代理 App 与 ASIM 不抢同一条流；ASIM mihomo 以 root 跑，其对节点的出站连接也绕过 VpnService——无双层套娃，直接走当前默认网络（WiFi 或蜂窝）。
-- 唯一交叉点是 ip rule 优先级：ASIM 的 dst 型规则放 pref 8999（VpnService 常见规则在 15000+），只命中 ePDG IP，对用户 App 的其他分流零影响。
-- 内核备选：若 mihomo TUN 与 VpnService 实测互抢（M0 冒烟不过），换 sing-box（TUN/TPROXY）再试，设计不变。
-
-## 实现侧已定（对 builder 审查的回应）
-
-- **节点固定**：每张卡绑定一个指定节点（不走 url-test/负载均衡组），避免出口 IP 漂移导致 IPsec 会话中途断掉。换节点是 WebUI 显式操作。（builder 问题 3）
-- **SELinux**：`ip rule` 增删在本机 ksu 域实测可用；CarrierConfig 读取被拒，v1 仅公式推导。守护进程维持 shell 脚本方案，不引 sepolicy 补丁。（builder 问题 5）
-- **go/no-go 前置**：M0 冒烟不过即换路线，不做无效工程。（builder 问题 1、2 的实测部分）
-
-## 留给实现的细节
-
-- asimd 用 shell 脚本 + toybox 还是编译一个小二进制：实现者定（倾向脚本，可审计）。
-- ePDG 解析 DNS 的选择（走系统 DNS / 直连 223.5.5.5 / 走 mihomo 内置 DNS）：实现者测污染情况后定，默认系统 DNS。
-- WebUI 与 asimd 的通信（文件状态 JSON vs 本地 HTTP）：实现者定，倾向文件 JSON + ksu exec 调用控制命令。
-- mihomo 订阅的获取与更新方式（用户贴入订阅 URL，模块定期拉取）。
-- IPv6 ePDG 的处理顺序（先 v4 验证，v6 后补）。
-
-## 里程碑与 go/no-go 冒烟测试（M0，动工前必做）
-
-spike 验证的是"PC Clash Verge 替代出口"，**没有**验证手机端 mihomo。M0 在真机上一口气回答三件事：
-
-1. 订阅的 trojan 英国节点从**手机端**拨号时，UDP 500/4500/ESP(NAT-T) 能否可靠转发（很多机场禁非 DNS 的 UDP——此条不过，轻量路线整体作废，转 SWu 软件隧道路线，另立项）。
-2. 手机端 mihomo TUN + `ip rule add to <epdg> pref 8999` 与系统 iwlan mark 0x20000 规则共存时，系统 IKE 包是否真被截进 TUN（不过则退路：iptables mangle OUTPUT 对 dst 打 mark）。
-3. 与用户已装代理 App 同时开启时是否互抢路由。
+- 出口：mihomo + 用户机场订阅（trojan 英国节点，`udp: true`）。
+- 家庭路由器：OpenWrt，可 24 小时在线。
+- 目标卡：CTExcel（subId=1）；联通卡（subId=2）不得受影响。
+- **硬性要求：与用户日常代理 App 同时在线**（路由器方案下天然成立：手机侧不再有 TUN）。
+- **硬性要求：勾选即阻止驻网**，SIM 保持上电可鉴权；取消/停用/卸载恢复原状。三方案（M0 实测选默认，WebUI 可切）：
+  - A. `set-allowed-network-types-for-users` 限到 GSM-only（国内多数地区 2G 已退网）；
+  - B. bitmask 0（若被接受）；
+  - C. 手动选网锁定到不可用 PLMN。
+  - 禁止 `disable-physical-subscription`（会断电 UICC，AKA 不可用）。
 
 ## 风险与对策
 
-1. **系统 iwlan 的 mark 路由可能绕过我们的规则**（rule 9999 在 mark 命中时是否优先）：dst 型 ip rule 放在更小 pref，理论必中；若仍失败，退路是 iptables mangle OUTPUT 对 dst 打新 mark。spike 阶段未在真机上验证此规则共存，**这是首个要在真机上冒烟的点**。
-2. **用户已装的 VPN 代理 App 与新 TUN 冲突**：两者都是 tun + ip rule，可能互抢。对策：模块文档注明互斥/共存测试；必要时只在做 WFC 时挂 TUN。
-3. **EE 对出口 IP geo 敏感**：必须英国节点；若换运营商（如美国卡），节点国家要跟着换——WebUI 提供按卡配置节点。
-4. **ePDG IP 轮换导致会话中断**：解析周期（建议 5 分钟）+ 变更时平滑更新；WFC 系统本身有重连逻辑。
-5. **CTExcel 卡被误启用驻网**：模块不主动改卡状态；用户自己保持该卡"启用但飞行模式"或设置数据关闭。文档写清。
-6. **Android/系统更新改变 iwlan 行为**：模块绑定本机版本行为，升级后需复测（项目性质使然，无法根治）。
-7. **订阅凭据安全**：配置落盘在模块目录（root only 权限），WebUI 不回显密码。
+1. **路由器侧 fake-ip 会污染手机的联网校验**（实测：黑洞整段 fake-ip 会打断 Android network validation）：路由器不要把整段 fake-ip 黑洞；正常 mihomo fake-ip + 直连规则即可，PC 热点已验证校验能通过。
+2. **家里 WiFi 下基带可能不主动建 IWLAN**（14:58 那次因基带状态卡死）：基带状态只在整机断电后干净。验收时必须"整机断电 → 开机 → 连 WiFi"测一次，而不是热切换。
+3. **2G 兜底**：方案 A 若当地仍有 GSM 覆盖，卡可能驻留 2G。M0 实测各方案；默认值由实测决定，WebUI 可切 C。
+4. **运营商侧对"从未驻网只走 VoWiFi"的限制**：CTExcel 可能要求周期性蜂窝注册，长期只用 WiFi 可能被停；属于运营策略，模块不解决，文档写明。
+5. **Android/系统更新改变 IWLAN 行为**：升级后需复测（项目性质使然）。
+6. **模块锁住网络类型后用户"手机像砖"**：uninstall.sh 与 stop 路径强制 unlock；`state.json` 里保留原值副本。
 
 ## 验收标准
 
-1. 联通卡数据、其他 App 流量速度/路由与装模块前无差异（用测速与 traceroute 验证）。
-2. 飞行模式 + WiFi（或不开飞行、卡不驻网状态下）CTExcel WFC 注册成功，可收发短信、通话。
-3. 手机蜂窝网络（联通数据）下同样成立——即不依赖 WiFi。
-4. 断开/切换网络后 5 分钟内自动恢复注册。
-5. WebUI 能看到状态并切换节点。
+1. 联通卡数据、其他 App 流量与装模块前无差异（测速 + 出口国家 `CN`）。
+2. 家庭 WiFi 下，CTExcel WFC 注册成功（`WLAN: IWLAN, HOME`），收得到短信；整机断电重启后 5 分钟内自动恢复。
+3. 勾选 CTExcel 后，该卡 voice/data 均不 `IN_SERVICE`（三种模式各测一次），同时 WFC 仍注册成功。
+4. 取消勾选 / `asimd.sh stop` / 卸载模块后，网络类型恢复原值、卡可正常驻网。
+5. WebUI 能显示状态（各卡 reg、IMS 注册、当前 mask）并切换防驻网模式。
