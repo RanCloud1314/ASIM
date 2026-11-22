@@ -228,4 +228,5 @@ build.ps1          打包 module/ → asim-vX.Y.Z.zip，并编译两个平台的
 ## 版本
 
 当前 `v0.3.0`：防驻网 + 守护 + WebUI + 多协议中继（trojan / vless / hysteria2）+ WebUI 改节点/路由器地址/测延迟 + 真机验收。
+中继单独发到 `v0.3.1`：修掉 ePDG IP 只换序就切流、上游会话单向死掉仍挂 180 秒导致的周期性掉线（模块本身无变化）。
 逐条验收证据见 [`docs/superpowers/plans/2026-11-22-asim-acceptance.md`](docs/superpowers/plans/2026-11-22-asim-acceptance.md)。
