@@ -31,6 +31,18 @@ cmd phone set-allowed-network-types-for-users -s 1 11001101001110000111
 | **B. bitmask 0** (`0`) | ❌ **基带不支持** | 返回 `failed`，logcat：`PhoneInterfaceManager: setAllowedNetworkTypesForReason: CommandException: REQUEST_NOT_SUPPORTED`。DB 里显示 `UNKNOWN` 是假象，模仍按旧配置跑 |
 | **C. 手动锁不可用 PLMN** | ⚠️ 未测 | `cmd phone` 无网络选择命令，只能走 `service call phone`（transaction code 需另查） |
 
+## 对照组：不锁时会发生什么（恢复原值后约 1 分钟）
+
+```
+rmnet_data1@rmnet_ipa0 UNKNOWN  10.104.26.213/30     ← 蜂窝数据 PDN 已建立
+mVoiceRegState=0(IN_SERVICE)
+mDataRegState=0(IN_SERVICE)
+```
+
+即：完整配置下，这张卡会**很快驻网并拿到运营商内部 IPv4**。这就是模块要拦的状态，也是「不锁」的基线。
+
+对比 GSM-only 时：`mNetworkRegistrationInfos` 里只剩 `WLAN PS`，一条 WWAN 都没有。
+
 ## 重要的方法学教训
 
 mask=0 那次试验里，「90 秒没驻网」**不能**算方案有效的证据 —— 因为模根本没收到配置。判据必须是二选一：
