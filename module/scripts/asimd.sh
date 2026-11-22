@@ -20,7 +20,7 @@ ROUTER_TOKEN=""
 . "$(dirname "$SELF")/nocamp.sh"
 
 # customize.sh only runs at install time; self-heal a wiped /data/adb for reboot paths.
-if [ ! -f "$CONF" ]; then
+if [ ! -f "$CONF" ] && [ "$(id -u)" = 0 ]; then
   mkdir -p "$ASIM_DIR" && chmod 700 "$ASIM_DIR"
   cp "$(dirname "$SELF")/../config/asim.conf" "$CONF" 2>/dev/null && chmod 600 "$CONF"
 fi
@@ -51,12 +51,13 @@ reg_state() {
   echo "$v $d $i"
 }
 
-compose_slot() { # <slot> <subId> <name> <mask> <orig> <voice> <data> <iwlan>
+compose_slot() { # <slot> <subId> <name> <mask> <orig> <managed> <voice> <data> <iwlan>
   local locked=false
   [ "$4" = "$GSM_ONLY_DEC" ] && locked=true
-  printf '{"slot":%s,"subId":%s,"name":"%s","mask":%s,"orig":%s,"locked":%s,"voice":%s,"data":%s,"iwlan":%s}' \
-    "$1" "${2:-null}" "$(json_escape "$3")" "${4:-null}" "${5:-null}" "$locked" \
-    "$(json_str "$6")" "$(json_str "$7")" "$(json_str "$8")"
+  printf '{"slot":%s,"subId":%s,"name":"%s","mask":%s,"orig":%s,"managed":%s,"locked":%s,"voice":%s,"data":%s,"iwlan":%s}' \
+    "$1" "${2:-null}" "$(json_escape "$3")" "${4:-null}" "${5:-null}" \
+    "$([ "$6" = true ] && echo true || echo false)" "$locked" \
+    "$(json_str "$7")" "$(json_str "$8")" "$(json_str "$9")"
 }
 
 relay_sanitize() { # pass our own /status through; anything else becomes null
@@ -77,15 +78,18 @@ relay_status() {
 
 write_state() {
   local tel=$TMPD/asimd-tel.$$ tmp=$ASIM_DIR/state.json.tmp
-  local s f rec sub name mask orig reg
+  local s m f rec sub name mask orig reg managed
   local first=1
   dumpsys telephony.registry > "$tel" 2>/dev/null || : > "$tel"
   {
     printf '{"updated":%s,"slots":[' "$(date +%s)"
-    for s in $SLOTS; do
+    # every physical slot, so the WebUI can offer an unchecked one to take over
+    for s in $(slot_list); do
       f=$(archive_of "$s")
       orig=""
       [ -f "$f" ] && orig=$(cat "$f")
+      managed=false
+      for m in $SLOTS; do [ "$m" = "$s" ] && managed=true; done
       rec=$(slot_line "$s")
       sub=$(echo "$rec" | sed -n 's/.*SubscriptionInfoInternal: id=\([0-9]*\).*/\1/p')
       name=$(echo "$rec" | sed -n 's/.* displayName=\([^ ]*\).*/\1/p')
@@ -94,7 +98,7 @@ write_state() {
       set -- $reg
       [ "$first" -eq 1 ] || printf ','
       first=0
-      compose_slot "$s" "${sub:-}" "${name:-unknown}" "$mask" "$orig" "$1" "$2" "$3"
+      compose_slot "$s" "${sub:-}" "${name:-unknown}" "$mask" "$orig" "$managed" "$1" "$2" "$3"
     done
     printf '],"relay":%s}\n' "$(relay_status)"
   } > "$tmp" && mv "$tmp" "$ASIM_DIR/state.json" && chmod 600 "$ASIM_DIR/state.json"
@@ -103,6 +107,7 @@ write_state() {
 
 tick() {
   local s out
+  [ -f "$CONF" ] && . "$CONF"   # pick up SLOTS edits from the WebUI without a restart
   for s in $SLOTS; do
     case $s in
       *[!0-9]*) log "bad slot [$s] in SLOTS, skipped"; continue ;;
@@ -169,7 +174,7 @@ start() {
 }
 
 stop() {
-  local pid s i=0
+  local pid f s i=0
   pid=$(cat "$PIDF" 2>/dev/null)
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     kill "$pid" 2>/dev/null
@@ -179,8 +184,13 @@ stop() {
     done
     kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
   fi
-  # unlock even when the daemon was already gone (crash, reboot, manual kill)
-  for s in $SLOTS; do unlock "$s"; done
+  # unlock even when the daemon was already gone (crash, reboot, manual kill).
+  # the archives are the truth: they are exactly the slots we changed.
+  for f in "$ASIM_DIR"/slot*.mask; do
+    [ -f "$f" ] || continue
+    s=${f##*/slot}
+    unlock "${s%.mask}"
+  done
   rm -f "$PIDF"
   rm -rf "$LOCKD"
   log "stopped"
@@ -224,12 +234,12 @@ selftest() {
   rm -f "$TMPD/asimd-tel-selftest"
 
   echo "--- slot object ---"
-  check "locked slot" \
-    '{"slot":1,"subId":1,"name":"CTExcel","mask":32768,"orig":54151,"locked":true,"voice":"IN_SERVICE","data":"OUT_OF_SERVICE","iwlan":"HOME"}' \
-    "$(compose_slot 1 1 CTExcel 32768 54151 IN_SERVICE OUT_OF_SERVICE HOME)"
-  check "unlocked slot, no archive" \
-    '{"slot":1,"subId":1,"name":"CTExcel","mask":54151,"orig":null,"locked":false,"voice":null,"data":null,"iwlan":null}' \
-    "$(compose_slot 1 1 CTExcel 54151 "" - - -)"
+  check "managed + locked" \
+    '{"slot":1,"subId":1,"name":"CTExcel","mask":32768,"orig":54151,"managed":true,"locked":true,"voice":"IN_SERVICE","data":"OUT_OF_SERVICE","iwlan":"HOME"}' \
+    "$(compose_slot 1 1 CTExcel 32768 54151 true IN_SERVICE OUT_OF_SERVICE HOME)"
+  check "not managed, no archive" \
+    '{"slot":1,"subId":1,"name":"CTExcel","mask":54151,"orig":null,"managed":false,"locked":false,"voice":null,"data":null,"iwlan":null}' \
+    "$(compose_slot 1 1 CTExcel 54151 "" false - - -)"
 
   echo "--- relay sanitize ---"
   check "relay ok" '{"enabled":true,"flows":[]}' "$(relay_sanitize '{"enabled":true,"flows":[]}')"
@@ -245,9 +255,10 @@ main() {
     start) start ;;
     stop) stop ;;
     status) status ;;
+    state) write_state ;;
     run) run ;;
     selftest) selftest ;;
-    *) echo "usage: $0 start|stop|status|run|selftest" >&2; exit 2 ;;
+    *) echo "usage: $0 start|stop|status|state|run|selftest" >&2; exit 2 ;;
   esac
 }
 

@@ -4,12 +4,17 @@
 #
 #   nocamp.sh lock <slot>     archive the user mask, then set GSM-only
 #   nocamp.sh unlock <slot>   restore the archived mask
+#   nocamp.sh enable <slot>   add the slot to SLOTS in asim.conf, then lock
+#   nocamp.sh disable <slot>  remove it from SLOTS, then unlock
+#   nocamp.sh slots           print the managed slot list
 #   nocamp.sh status [slot]   human readable state
 #   nocamp.sh selftest        pure-function checks + planned actions, no writes
 #
 # <slot> is the SIM slot id (simSlotIndex), NOT subId.
 
 ASIM_DIR=${ASIM_DIR:-/data/adb/asim}
+CONF=${CONF:-$ASIM_DIR/asim.conf}
+TMPD=${TMPD:-${TMPDIR:-/data/local/tmp}}
 GSM_ONLY_DEC=32768
 
 log() { echo "nocamp: $*"; }
@@ -109,8 +114,36 @@ unlock() {
   log "slot $slot restored to $orig"
 }
 
-slot_list() {
-  dumpsys isub | grep -o 'simSlotIndex=[0-9]*' | sed 's/.*=//' | sort -u
+# slots_edit <slot> on|off — rewrite SLOTS="..." in $CONF, print the new list.
+slots_edit() {
+  local slot=$1 want=$2 list out s tmp
+  [ -f "$CONF" ] || { die "no config $CONF"; return 1; }
+  list=$(sed -n 's/^SLOTS="\(.*\)"[[:space:]]*$/\1/p' "$CONF" | sed -n '$p')
+  out=
+  for s in $list; do
+    [ "$s" = "$slot" ] || out="$out $s"
+  done
+  [ "$want" = on ] && out="$out $slot"
+  out=$(echo $out)
+  tmp=$CONF.tmp
+  if sed "s/^SLOTS=.*/SLOTS=\"$out\"/" "$CONF" > "$tmp"; then
+    mv "$tmp" "$CONF" && chmod 600 "$CONF" || return 1
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+  echo "$out"
+}
+
+# enable/disable <slot> — managed slot set + apply right now, so it survives a tick.
+slot_set() {
+  local slot=$1 want=$2 out
+  out=$(slots_edit "$slot" "$want") || return 1
+  log "SLOTS=\"$out\""
+  if [ "$want" = on ]; then lock "$slot"; else unlock "$slot"; fi
+}
+
+slot_list() {  dumpsys isub | grep -o 'simSlotIndex=[0-9]*' | sed 's/.*=//' | sort -u
 }
 
 slot_line() { # <slot> — first SubscriptionInfoInternal record for that slot
@@ -170,6 +203,16 @@ selftest() {
   check "mask slot 0" 840583 "$(printf '%s\n' "$FIXTURE" | _parse_mask 0)"
   check_fails "mask missing slot" _parse_mask 5 < /dev/null
 
+  echo "--- slots config editing (temp copy) ---"
+  local td=$TMPD/asim-selftest
+  rm -rf "$td" && mkdir -p "$td"
+  printf 'SLOTS="1 2"\nROUTER_API="x"\n' > "$td/asim.conf"
+  check "slots_edit off 1" "2" "$(CONF=$td/asim.conf slots_edit 1 off)"
+  check "slots_edit on 1" "2 1" "$(CONF=$td/asim.conf slots_edit 1 on)"
+  check "conf keeps other lines" 'ROUTER_API="x"' "$(sed -n '2p' "$td/asim.conf")"
+  check "slots_edit off missing" "2 1" "$(CONF=$td/asim.conf slots_edit 7 off)"
+  rm -rf "$td"
+
   echo "--- planned actions (read-only) ---"
   local s
   for s in $(slot_list); do
@@ -188,9 +231,12 @@ main() {
   case "${1:-}" in
     lock) lock "${2:?slot}" ;;
     unlock) unlock "${2:?slot}" ;;
+    enable) slot_set "${2:?slot}" on ;;
+    disable) slot_set "${2:?slot}" off ;;
+    slots) sed -n 's/^SLOTS="\(.*\)"$/\1/p' "$CONF" ;;
     status) status "${2:-}" ;;
     selftest) selftest ;;
-    *) echo "usage: $0 lock|unlock|status|selftest [slot]" >&2; exit 2 ;;
+    *) echo "usage: $0 lock|unlock|enable|disable|slots|status|selftest [slot]" >&2; exit 2 ;;
   esac
 }
 

@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<title>ASIM</title>
+<style>
+  :root {
+    --bg:#0b0f14; --card:#141b23; --line:#243040; --fg:#e6edf5; --dim:#8b9bb0;
+    --ok:#3fd68c; --warn:#f0b429; --bad:#ff6b6b; --accent:#4aa8ff;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:16px 14px 40px; background:var(--bg); color:var(--fg);
+    font:15px/1.5 -apple-system,"Noto Sans CJK SC","Segoe UI",Roboto,sans-serif;
+  }
+  header { display:flex; align-items:baseline; gap:8px; margin:4px 2px 14px; }
+  h1 { font-size:20px; margin:0; letter-spacing:.5px; }
+  header span { color:var(--dim); font-size:12px; }
+  .card {
+    background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:14px; margin-bottom:12px;
+  }
+  .card h2 { font-size:13px; margin:0 0 10px; color:var(--dim); font-weight:600;
+    text-transform:uppercase; letter-spacing:.08em; }
+  .slot-head { display:flex; align-items:center; gap:10px; }
+  .slot-head .name { font-weight:600; }
+  .badge {
+    font-size:11px; padding:2px 7px; border-radius:999px; border:1px solid var(--line);
+    color:var(--dim); white-space:nowrap;
+  }
+  .badge.ok { color:var(--ok); border-color:#1f5c42; background:#0f2419; }
+  .badge.warn { color:var(--warn); border-color:#5c4a1f; background:#241f0f; }
+  .badge.bad { color:var(--bad); border-color:#5c2323; background:#241010; }
+  .switch { margin-left:auto; position:relative; width:52px; height:30px; flex:none; }
+  .switch input { opacity:0; width:0; height:0; }
+  .switch label {
+    position:absolute; inset:0; background:#2a3544; border-radius:999px;
+    transition:background .15s; cursor:pointer;
+  }
+  .switch label::after {
+    content:""; position:absolute; top:3px; left:3px; width:24px; height:24px;
+    background:#fff; border-radius:50%; transition:transform .15s;
+  }
+  .switch input:checked + label { background:var(--ok); }
+  .switch input:checked + label::after { transform:translateX(22px); }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:12px; }
+  .kv { background:#0e141b; border-radius:10px; padding:8px 10px; }
+  .kv b { display:block; font-size:11px; color:var(--dim); font-weight:600; margin-bottom:2px; }
+  .kv span { font-size:13px; font-variant-numeric:tabular-nums; word-break:break-all; }
+  .meta { margin-top:10px; font-size:12px; color:var(--dim); }
+  .row { display:flex; align-items:center; gap:10px; }
+  button {
+    font:inherit; font-size:14px; padding:10px 14px; border-radius:10px;
+    border:1px solid var(--line); background:#1b2530; color:var(--fg);
+    cursor:pointer; flex:1;
+  }
+  button:active { background:#223040; }
+  button:disabled { opacity:.5; }
+  button.danger { border-color:#5c2323; background:#241010; color:#ffb3b3; }
+  pre {
+    margin:0; font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;
+    white-space:pre-wrap; word-break:break-all; max-height:220px; overflow:auto;
+    color:#a9bacd;
+  }
+  .note { font-size:12px; color:var(--dim); line-height:1.6; }
+  .note strong { color:var(--warn); font-weight:600; }
+  .flow { font:12px/1.5 ui-monospace,monospace; color:#a9bacd; }
+  .empty { color:var(--dim); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ASIM</h1><span>海外卡防驻网 · 路由器中继</span>
+</header>
+
+<div id="slots"></div>
+
+<div class="card">
+  <h2>路由器中继</h2>
+  <div id="relay" class="empty">读取中…</div>
+  <div class="row" style="margin-top:12px">
+    <button id="relayBtn" disabled>切换</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>应急</h2>
+  <div class="row">
+    <button id="stopBtn" class="danger">停止守护并恢复原网络类型</button>
+  </div>
+  <p class="note" style="margin-bottom:0">
+    会停掉守护、按存档把每张卡恢复成安装前的网络类型。想重新开启防驻网就重启手机。
+  </p>
+</div>
+
+<div class="card">
+  <h2>操作输出</h2>
+  <pre id="out">（还没有操作）</pre>
+</div>
+
+<div class="card note">
+  <strong>切飞行模式或断开 WiFi 会拆掉 IMS PDN，且不会自动重建。</strong>
+  VoWiFi 需要重连 WiFi 才回来；基带 IWLAN 状态卡死时只能整机断电。
+  出门不在家庭 WiFi 时没有 VoWiFi（本模块不提供蜂窝漫游能力）。
+</div>
+
+<script>
+const MOD = '/data/adb/modules/asim';
+const CONF = '/data/adb/asim/asim.conf';
+const STATE = '/data/adb/asim/state.json';
+const out = document.getElementById('out');
+let busy = false;
+let lastState = null;
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function log(line) {
+  const t = new Date().toTimeString().slice(0, 8);
+  out.textContent = '[' + t + '] ' + line + '\n' + out.textContent;
+  if (out.textContent.length > 6000) out.textContent = out.textContent.slice(0, 6000);
+}
+
+async function sh(cmd) {
+  if (typeof ksu === 'undefined' || !ksu.exec) throw new Error('需要从 KernelSU 管理器的模块 WebUI 打开');
+  const r = await ksu.exec(cmd);
+  // 不同管理器的桥不一样：KernelSU 返回 {errno,stdout,stderr}，KernelSU-Next 可能只回 stdout 字符串。
+  if (typeof r === 'string') {
+    if (!r.length) throw new Error('命令没有输出');
+    return r.trim();
+  }
+  if (!r || typeof r !== 'object') throw new Error('未知的 ksu.exec 返回: ' + String(r).slice(0, 120));
+  const code = r.errno ?? r.code ?? 0;
+  const text = String((r.stdout ?? '') + (r.stderr ?? ''));
+  if (code) throw new Error(text.trim() || 'exit ' + code);
+  if (r.stdout === undefined && r.stderr === undefined) {
+    throw new Error('未知的 ksu.exec 返回: ' + JSON.stringify(r).slice(0, 160));
+  }
+  return text.trim();
+}
+
+async function act(label, cmd) {
+  if (busy) return;
+  busy = true;
+  document.body.style.opacity = .6;
+  log('$ ' + label);
+  try {
+    const o = await sh(cmd);
+    log('✔ ' + (o || '完成'));
+  } catch (e) {
+    log('✘ ' + e.message);
+  } finally {
+    busy = false;
+    document.body.style.opacity = 1;
+    refresh();
+  }
+}
+
+function badge(text, cls) { return '<span class="badge ' + (cls || '') + '">' + esc(text) + '</span>'; }
+
+function regClass(v) {
+  if (v === 'HOME' || v === 'IN_SERVICE') return 'ok';
+  if (!v || v === 'OUT_OF_SERVICE' || v === 'NOT_REG_OR_SEARCHING') return 'bad';
+  return 'warn';
+}
+
+function renderSlots(slots) {
+  const box = document.getElementById('slots');
+  if (!slots || !slots.length) {
+    box.innerHTML = '<div class="card"><span class="empty">没有配置任何卡槽（检查 /data/adb/asim/asim.conf 的 SLOTS）</span></div>';
+    return;
+  }
+  box.innerHTML = slots.map(s => {
+    const managed = s.managed === true;
+    const locked = s.locked === true;
+    return '<div class="card">' +
+      '<div class="slot-head">' +
+        '<span class="name">slot ' + esc(s.slot) + ' · ' + esc(s.name || '未知') + '</span>' +
+        badge('subId ' + esc(s.subId), '') +
+        '<span class="switch"><input type="checkbox" id="sw' + esc(s.slot) + '"' + (managed ? ' checked' : '') +
+        ' aria-label="接管 slot ' + esc(s.slot) + '"><label for="sw' + esc(s.slot) + '"></label></span>' +
+      '</div>' +
+      '<div class="grid">' +
+        '<div class="kv"><b>网络类型</b><span>' + (locked ? '仅 GSM' : esc(s.mask)) + '</span></div>' +
+        '<div class="kv"><b>语音 / 数据</b><span>' + esc(s.voice || '-') + ' / ' + esc(s.data || '-') + '</span></div>' +
+        '<div class="kv"><b>IWLAN</b><span>' + badge(s.iwlan || '-', regClass(s.iwlan)) + '</span></div>' +
+      '</div>' +
+      '<div class="meta">' + (managed ? badge('已接管', 'ok') : badge('未接管', '')) +
+        '　原值 ' + esc(s.orig ?? '无存档') + '</div>' +
+    '</div>';
+  }).join('');
+
+  slots.forEach(s => {
+    const el = document.getElementById('sw' + s.slot);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      const cmd = 'sh ' + MOD + '/scripts/nocamp.sh ' + (el.checked ? 'enable ' : 'disable ') + s.slot +
+        ' && sh ' + MOD + '/scripts/asimd.sh state';
+      act((el.checked ? '接管 slot ' : '放开 slot ') + s.slot, cmd);
+    });
+  });
+}
+
+function renderRelay(r) {
+  const box = document.getElementById('relay');
+  const btn = document.getElementById('relayBtn');
+  if (!r || r.enabled === null || r.enabled === undefined) {
+    box.innerHTML = '<span class="empty">路由器不可达（不影响防驻网）</span>';
+    btn.disabled = true;
+    btn.textContent = '切换';
+    return;
+  }
+  btn.disabled = false;
+  btn.textContent = r.enabled ? '停用中继' : '启用中继';
+  const flows = Array.isArray(r.flows) ? r.flows : [];
+  box.innerHTML =
+    '<div class="row">' + (r.enabled ? badge('已启用', 'ok') : badge('已停用', 'bad')) +
+      '<span class="empty">ePDG ' + (r.epdg_ips || []).length + ' 个地址 · 活跃流 ' + flows.length + '</span></div>' +
+    (flows.length
+      ? '<div class="flow" style="margin-top:8px">' + flows.map(f =>
+          esc(f.client) + ' → ' + esc(f.dest)).join('<br>') + '</div>'
+      : '');
+}
+
+function renderMeta(state) {
+  const age = Math.max(0, Math.floor(Date.now() / 1000) - (state.updated || 0));
+  const stale = age > 180;
+  const el = document.querySelector('header span');
+  el.textContent = stale ? '状态 ' + age + 's 未更新 · 守护可能未运行' : '海外卡防驻网 · 路由器中继';
+  el.style.color = stale ? 'var(--warn)' : '';
+}
+
+async function refresh() {
+  if (busy) return;
+  let raw;
+  try {
+    raw = await sh('cat ' + STATE);
+  } catch (e) {
+    document.getElementById('slots').innerHTML =
+      '<div class="card"><span class="empty">读不到 ' + esc(STATE) + '：' + esc(e.message) + '</span></div>';
+    return;
+  }
+  let state;
+  try { state = JSON.parse(raw); } catch (e) {
+    document.getElementById('slots').innerHTML =
+      '<div class="card"><span class="empty">state.json 解析失败</span></div>';
+    return;
+  }
+  lastState = state;
+  renderSlots(state.slots);
+  renderRelay(state.relay);
+  renderMeta(state);
+}
+
+document.getElementById('relayBtn').addEventListener('click', () => {
+  const on = lastState && lastState.relay && lastState.relay.enabled;
+  const path = on ? 'disable' : 'enable';
+  act('中继 ' + path,
+    '. ' + CONF + ' && curl -s --max-time 4 -X POST -H "X-ASIM-Token: $ROUTER_TOKEN" "$ROUTER_API/' + path + '"');
+});
+
+document.getElementById('stopBtn').addEventListener('click', () => {
+  if (!confirm('停止守护并恢复所有已锁卡槽的原始网络类型？')) return;
+  act('asimd stop', 'sh ' + MOD + '/scripts/asimd.sh stop');
+});
+
+refresh();
+setInterval(refresh, 10000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+</script>
+</body>
+</html>
