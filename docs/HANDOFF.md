@@ -142,12 +142,15 @@ running」直接退出；`stop` 还会去 kill 那个无关进程。现在 `is_r
 
 ## 下一步
 
-按 `docs/superpowers/plans/2026-11-22-asim.md` 从 **Task 5（`nocamp.sh`）** 开始，一路做到 Task 8 验收。
+当前唯一的活是查周期性掉线：见 `docs/VOWIFI-DEBUG.md`。
+（`docs/superpowers/plans/2026-11-22-asim.md` 的实施计划已全部落地，只剩验收。）
 
 ## 文件地图
 
 | 路径 | 说明 |
 |---|---|
+| `docs/HANDOFF.md` | 项目总交接（本文） |
+| `docs/VOWIFI-DEBUG.md` | **周期性掉线排错专用交接**：403 时间线、已排除项、下一步实验、调试命令 |
 | `docs/superpowers/specs/2026-11-22-asim-design.md` | 设计权威文档（v3） |
 | `docs/superpowers/plans/2026-11-22-asim.md` | 实施计划，逐 Task 执行 |
 | `m0/M0-B-FINDINGS.md` | 为什么手机侧分流不可行的决定性证据 |
