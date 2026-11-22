@@ -482,6 +482,9 @@ adb shell "dumpsys telephony.registry | grep -oE 'voice=[A-Z_]+|iwlan=[A-Z_]+' |
 
 > **已完成（commit `c71a501`，随 v0.4.0 一起发布）**；额外补了 `README.md` 与
 > `module/module.prop` 的版本号。
+>
+> **2026-11-23 追加**：旧转发面已整体删除（v0.4.1），本计划的「保留旧实现作对照」
+> 不再成立 —— 见 `router/asim-relay/README.md`。
 
 **Files:**
 - Modify: `docs/HANDOFF.md`（链路图、当前状态、文件地图）

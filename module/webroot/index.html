@@ -449,7 +449,7 @@ async function saveNode() {
     lastPing = null;
     hint.textContent = '已保存';
     hint.className = 'badge ok';
-    log('✔ 节点已生效' + (r.restart_required ? '（监听地址变更需重启中继）' : ''));
+    log('✔ 节点已生效');
   } catch (e) {
     hint.textContent = '保存失败';
     hint.className = 'badge bad';
@@ -467,7 +467,7 @@ async function pingNode() {
   const btn = document.getElementById('pingBtn');
   btn.disabled = true;
   btn.textContent = '测试中…';
-  log('$ 测试节点延迟（真实 UDP 往返）');
+  log('$ 测试节点延迟（经 mihomo）');
   try {
     const r = await relay('ping');
     if (r.error) throw new Error(r.error);

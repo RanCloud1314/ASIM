@@ -1,7 +1,4 @@
 {
-  "domain": "epdg.epc.mnc033.mcc234.pub.3gppnetwork.org",
-  "listen_addr": "192.168.100.1",
-  "listen_ports": [500, 4500],
   "node": {
     "host": "pokemon888-go.pikaholo.com",
     "port": 56007,

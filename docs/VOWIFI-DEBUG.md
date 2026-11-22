@@ -353,13 +353,15 @@ Invoke-RestMethod -Uri 'http://192.168.100.1:8080/status' -Headers $h
 
 - Release `v0.4.0` 发 3 件：`asim-v0.4.0.zip`（模块，含 asimd pid 复用修复）、
   `asim-relay-linux-amd64`（32391328）、`asim-relay-windows-amd64.exe`（31581184）。
-- 路由器上跑的是 23:36 那版二进制（同源代码，`version` 字段还是 `0.3.1`），**没有跟着重装**：
+- `v0.4.1`（未发布）删掉了 relay 的旧转发面：500/4500 监听、DoH 解析、内嵌 Xray/Hysteria
+  全部移除，`go.mod` 只剩 module/go 两行，二进制约 7MB。`/status` 的 `flows`/`epdg_ips`
+  改为从 mihomo `/connections` 取，`/ping` 改为 mihomo 的代理延迟测试，`/enable` `/disable`
+  改为热切 mihomo 的 TUN。要退回旧链路得装回 `v0.4.0` 的二进制。
+- 路由器上跑的是 23:36 那版二进制（与 `v0.4.0` 同源，`version` 字段还是 `0.3.1`），**没有跟着重装**：
   重装会触发 mihomo 热重载、拆掉当前 ePDG 会话；等下次维护窗口或出问题时再对齐。
 - **线上配置变更（重要）**：`/etc/asim/relay.json` 的 `node.port` 已于 22:12 通过
   `PUT /config` 热切到 **56007**，并已落盘（重启不会回退）。`56006` 只在文档历史里出现。
-- 旧的自研转发路径仍留在代码里（`listen_addr` 500/4500），但 dnsmasq 不再指向路由器，
-  所以没有流量。原先计划的「500/4500 合并成一条上游会话」「4500 心跳」**不再需要**，
-  除非要退回自研转发。
+  该文件里旧的 `domain` / `listen_addr` / `listen_ports` 字段现在是未知字段，下次保存会被丢掉。
 
 ## 取证产物（本轮，2026-11-22 22:15–23:00）
 

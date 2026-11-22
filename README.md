@@ -75,10 +75,10 @@ PC 部署同样要在这台机器上跑 mihomo 并把手机指过去；这条路
 ## 二、手机：装 KSU 模块
 
 ```powershell
-.\build.ps1                                 # → asim-v0.4.0.zip + 两个平台的 relay（PowerShell 5.1+）
+.\build.ps1                                 # → asim-v0.4.1.zip + 两个平台的 relay（PowerShell 5.1+）
 ```
 
-1. KernelSU 管理器 → 模块 → 安装 `asim-v0.4.0.zip`；
+1. KernelSU 管理器 → 模块 → 安装 `asim-v0.4.1.zip`；
 2. **重启手机**（不是热重载，守护在 `service.sh` 里等 `sys.boot_completed`）；
 3. 模块页点 `WEBUI` 打开控制台。
 
@@ -113,7 +113,7 @@ KernelSU 管理器 → 模块 → ASIM → `WEBUI`。页面每 10 秒自动刷�
 │ [ 使用默认网关 ]                              │
 └──────────────────────────────────────────────┘
 ┌ 路由器中继                                    ┐
-│ 已启用  vless  v0.4.0  延迟 243 ms            │
+│ 已启用  vless  v0.4.1  延迟 243 ms            │
 │ 运行时间    丢包        活跃流                 │
 │ 2 小时 2 分  0          2                     │
 │ 192.168.100.103:41071|4500 → 31.94.76.5:4500 │
@@ -138,10 +138,10 @@ KernelSU 管理器 → 模块 → ASIM → `WEBUI`。页面每 10 秒自动刷�
   它可能来自 IWLAN。判断有没有驻网看 IWLAN 和下面「怎么确认没驻网」。
 - **IWLAN**：`HOME` = VoWiFi 注册成功，这才是你要的绿色状态。
   其它值里 `NOT_REG_OR_SEARCHING` 表示还没连上（刚开机等 1~3 分钟）。
-- **路由器中继**：显示运行时长、丢包、协议、ePDG 地址数和活跃流；数据面切到 mihomo 后
-  「活跃流」恒为 0，真实会话看 mihomo 的 `/connections`。`测节点延迟` 仍会做一次真实 UDP 往返（含握手），花几百毫秒到几秒。
-- **路由器地址**：留空即跟随手机默认网关；中继装在电脑上时填电脑的 LAN 地址。
-- **节点配置**：改协议 / 地址 / 端口 / 密码或 UUID / SNI 后点保存，路由器上立刻生效（监听地址变更除外，需要重启 relay）。VLESS 的传输方式、flow、REALITY 公钥在「高级」里。
+- **路由器中继**：显示运行时长、协议、ePDG 地址数和活跃流，全部来自 mihomo 的
+  `/connections`；mihomo 不可达时面板仍在，会提示错误。`测节点延迟` 让 mihomo 经代理取一次 URL，花几百毫秒到几秒。
+- **路由器地址**：留空即跟随手机默认网关；relay 装在电脑上时填电脑的 LAN 地址。
+- **节点配置**：改协议 / 地址 / 端口 / 密码或 UUID / SNI 后点保存，路由器上立刻写成新的 mihomo 配置并热重载。VLESS 的传输方式、flow、REALITY 公钥在「高级」里。
 - **操作输出**：每次点按钮的真实 stdout/stderr 都会回显在页面底部，排障先看这里。
 
 ### 典型一天
@@ -208,9 +208,8 @@ adb shell 'su -c "sh /data/adb/modules/asim/scripts/asimd.sh selftest"'
 - **守护被 `kill -9` 且没人跑 stop/uninstall** 时，卡会留在 GSM-only；存档还在，用上面手工恢复。
 - **运营商可能要求周期性蜂窝注册**，长期只走 WiFi 有被停卡的风险；属运营策略，模块不解决。
 - **系统/基带升级可能改变 IWLAN 行为**，升级后需要复测。
-- WebUI 的「停用中继」只关掉旧的转发路径和 API 里的开关，**不会停 mihomo**，VoWiFi 照常；要真的断网得停 mihomo。
-- **relay 二进制里仍内嵌 Xray 引擎，约 32MB**（为旧的转发路径保留）；路由器 x86_64 无压力，老 ARM 路由器先看磁盘。
-- **Hysteria2 走 QUIC**，被墙或 UDP 被封时测延迟会超时，属网络问题；本地回环已测通。
+- WebUI 的「停用中继」现在会直接停掉 mihomo 的 TUN，ePDG 改走路由器自己的 WAN（通常会注册失败），别在等电话时点。
+- **Hysteria2 走 QUIC**，被墙或 UDP 被封时测延迟会超时，属网络问题。
 - 节点密码/UUID 存在 `relay.json`（0600），改配置时经 LAN 明文 HTTP 传输，和 token 同等级信任，别在不可信网络里用。
 
 ## 仓库结构
@@ -226,8 +225,7 @@ build.ps1          打包 module/ → asim-vX.Y.Z.zip，并编译两个平台的
 
 ## 版本
 
-当前 `v0.4.0`：数据面从自研中继换成家里路由器上的 **mihomo**（TUN 只接管 ePDG 的
-`31.94.76.0/24`），`asim-relay` 只留控制面并在节点变更时生成 mihomo 配置、热重载；
-模块本身包含 asimd 的 pid 复用修复，重打了 zip。
-`v0.3.1`/`v0.3.0` 是旧的自研转发路线（已不再使用）。
+当前 `v0.4.1`：旧的中继转发面（500/4500 监听、DoH 解析、内嵌 Xray/Hysteria 引擎）已删除，
+`asim-relay` 只剩控制面，二进制约 7MB；`/status`、`/ping`、启停开关全部走 mihomo。
+`v0.4.0` 是切换数据面到 mihomo 的第一版（仍带旧转发面）；`v0.3.x` 是纯自研转发路线（已废弃）。
 逐条验收证据见 [`docs/superpowers/plans/2026-11-22-asim-acceptance.md`](docs/superpowers/plans/2026-11-22-asim-acceptance.md)。

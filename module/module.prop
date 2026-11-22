@@ -1,5 +1,5 @@
 id=asim
 name=ASIM — 海外卡防驻网
 author=asim
-version=v0.4.0
+version=v0.4.1
 description=让勾选的 SIM 卡永不驻网（GSM-only），SIM 保持上电以支持 EAP-AKA，同时配合家庭路由器上的 mihomo 走系统 WiFi Calling（trojan / VLESS / Hysteria2 节点由 asim-relay 下发），节点和路由器地址可在 WebUI 里改。取消勾选/停用/卸载会恢复原始网络类型；其他卡、其他流量完全不受影响。

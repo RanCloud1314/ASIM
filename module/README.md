@@ -1,7 +1,7 @@
 # ASIM — 海外卡防驻网（KernelSU 模块）
 
 让海外 SIM 卡在中国**永不驻网**、同时保持上电以支持 EAP-AKA，配合家庭 OpenWrt 上的
-`asim-relay` 中继，系统 WiFi Calling 可以正常工作。
+mihomo（由 `asim-relay` 下发节点），系统 WiFi Calling 可以正常工作。
 
 - 目标卡（默认 slot 1 / CTExcel 234/33）被锁到 GSM-only，不扫 LTE/NR；
 - SIM 仍上电，系统 IWLAN 走 WiFi 建立，VoWiFi 注册、收发短信/通话都正常；
@@ -9,9 +9,9 @@
 
 ## 前置
 
-家庭路由器（或局域网里的 PC）上必须已部署 `asim-relay`（见 `router/asim-relay/README.md`），
-并把 `epdg.epc.mnc033.mcc234.pub.3gppnetwork.org` 用 dnsmasq 指向中继所在机器。
-没有这一步，手机上什么都不会发生，只是不会驻网。
+家庭路由器上必须已部署 `asim-relay` + mihomo（见 `router/mihomo/README.md`），
+让 `epdg.epc.mnc033.mcc234.pub.3gppnetwork.org` 解析到真实地址、`31.94.76.0/24` 经
+mihomo 的 TUN 出去。没有这一步，手机上什么都不会发生，只是不会驻网。
 
 ## 安装
 
@@ -32,7 +32,7 @@ WebUI 上：
 - 右上角开关 = 是否接管这张卡。打开会把它加进 `SLOTS` 并立刻锁 GSM-only；
   关掉会从 `SLOTS` 移除并立刻恢复原值。**已经接管的卡由守护每 60 秒重新施加**，
   所以手工改回去会被改回来，要退出保护请用开关或下面的「停止守护」。
-- 中继区显示运行时长、丢包、协议和活跃流；`测节点延迟` 做一次真实 UDP 往返。
+- 中继区显示运行时长、协议和活跃流（数据来自路由器上的 mihomo）；`测节点延迟` 让 mihomo 经代理取一次 URL。
 - 「路由器地址」留空即自动用手机默认网关，也可填 PC 上中继的地址。
 - 「节点配置」可以改 trojan / VLESS / Hysteria2 节点，保存后在路由器上热生效。
 - 「停止守护并恢复原网络类型」= `asimd.sh stop`：立刻停守护、按存档恢复每张已接管的卡。

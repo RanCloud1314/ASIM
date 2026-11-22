@@ -12,7 +12,7 @@ import (
 
 func mustRender(t *testing.T, n Node) string {
 	t.Helper()
-	b, err := renderMihomo(n)
+	b, err := renderMihomo(n, true)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestRenderVLESSReality(t *testing.T) {
 
 func TestRenderUnsupportedNetwork(t *testing.T) {
 	for _, netw := range []string{"xhttp", "splithttp"} {
-		if _, err := renderMihomo(Node{Protocol: "vless", Host: "h", Port: 1, Password: "u", Network: netw}); err == nil {
+		if _, err := renderMihomo(Node{Protocol: "vless", Host: "h", Port: 1, Password: "u", Network: netw}, true); err == nil {
 			t.Errorf("%s: want error", netw)
 		}
 	}
@@ -82,6 +82,23 @@ func TestRenderRulesScope(t *testing.T) {
 	}
 	if strings.Contains(out, "0.0.0.0/1") || strings.Contains(out, "128.0.0.0/1") {
 		t.Error("must not route the default prefix into tun")
+	}
+}
+
+func TestRenderDisabled(t *testing.T) {
+	b, err := renderMihomo(Node{Host: "h", Port: 1, Password: "p"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	if !strings.Contains(out, "tun:\n  enable: false") {
+		t.Errorf("tun must be off:\n%s", out)
+	}
+	if strings.Contains(out, "route-address") || strings.Contains(out, "ASIM-UK,no-resolve") {
+		t.Errorf("disabled config must not touch ePDG:\n%s", out)
+	}
+	if !strings.Contains(out, "MATCH,DIRECT") {
+		t.Errorf("missing MATCH,DIRECT:\n%s", out)
 	}
 }
 
@@ -118,7 +135,7 @@ func TestSyncMihomo(t *testing.T) {
 	defer srv.Close()
 
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := syncMihomo(path, srv.URL, "tok", Node{Host: "h", Port: 1, Password: "p"}); err != nil {
+	if err := syncMihomo(path, srv.URL, "tok", Node{Host: "h", Port: 1, Password: "p"}, true); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	if gotAuth != "Bearer tok" || gotPath != path {
@@ -136,7 +153,7 @@ func TestSyncMihomoReloadFailure(t *testing.T) {
 	defer srv.Close()
 
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	err := syncMihomo(path, srv.URL, "tok", Node{Host: "h", Port: 1, Password: "p"})
+	err := syncMihomo(path, srv.URL, "tok", Node{Host: "h", Port: 1, Password: "p"}, true)
 	if err == nil || !strings.Contains(err.Error(), "reload") {
 		t.Fatalf("want reload error, got %v", err)
 	}
@@ -173,5 +190,49 @@ func TestHandleConfigReportsMihomoError(t *testing.T) {
 	}
 	if _, err := os.Stat(r.cfg.MihomoConfig); err != nil {
 		t.Fatalf("config must be written before reload: %v", err)
+	}
+}
+
+func TestMihomoSessions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/connections" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		io := `{"connections":[
+		 {"metadata":{"network":"udp","sourceIP":"192.168.100.103","sourcePort":"40830","destinationIP":"31.94.76.10","destinationPort":"500"},"start":"2026-11-22T15:38:26Z"},
+		 {"metadata":{"network":"udp","sourceIP":"192.168.100.103","sourcePort":"40830","destinationIP":"31.94.76.10","destinationPort":"500"},"start":"2026-11-22T15:38:26Z"},
+		 {"metadata":{"network":"tcp","sourceIP":"192.168.100.5","sourcePort":"50000","destinationIP":"1.1.1.1","destinationPort":"443"},"start":"2026-11-22T15:38:26Z"}
+		]}`
+		w.Write([]byte(io))
+	}))
+	defer srv.Close()
+
+	flows, ips, err := mihomoSessions(srv.URL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flows) != 1 || flows[0].Client != "192.168.100.103:40830" || flows[0].Dest != "31.94.76.10:500" {
+		t.Fatalf("bad flows: %+v", flows)
+	}
+	if len(ips) != 1 || ips[0] != "31.94.76.10" {
+		t.Fatalf("bad ips: %v", ips)
+	}
+}
+
+func TestMihomoDelay(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/proxies/ASIM-UK/delay" || r.URL.Query().Get("url") != delayURL {
+			t.Errorf("unexpected request %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		if r.Header.Get("Authorization") != "Bearer s" {
+			t.Errorf("missing bearer: %q", r.Header.Get("Authorization"))
+		}
+		w.Write([]byte(`{"delay":123}`))
+	}))
+	defer srv.Close()
+
+	ms, err := mihomoDelay(srv.URL, "s")
+	if err != nil || ms != 123 {
+		t.Fatalf("delay = %d, %v", ms, err)
 	}
 }

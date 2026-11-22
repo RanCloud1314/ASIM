@@ -1,7 +1,10 @@
 # mihomo 数据面切换（ePDG 中继）设计
 
 日期：2026-11-22
-状态：待批准
+状态：已实施
+> 2026-11-23 更新：本设计的「旧转发路径保留」已作废 —— v0.4.1 把 asim-relay 的
+> 500/4500 监听、DoH 解析和内嵌 Xray/Hysteria 全部删除，只留控制面。详见
+> `router/asim-relay/README.md` 与 `docs/VOWIFI-DEBUG.md` 的「代码状态」。
 
 ## 意图与为什么
 

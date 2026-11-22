@@ -14,7 +14,7 @@ Go 中继只保留控制面）。
 
 | 部分 | 状态 |
 |---|---|
-| 路由器 `asim-relay`（Go） | ✅ v0.3.1 只做控制面（`/status` `/ping` `/config`），节点变更时生成 mihomo 配置并热重载 |
+| 路由器 `asim-relay`（Go） | ✅ v0.4.1：只做控制面（`/status` `/ping` `/config` + 启停），节点变更时生成 mihomo 配置并热重载；旧转发面已删除，二进制约 7MB |
 | 路由器 mihomo | ✅ v1.19.34：TUN `asim0` 只接管 `31.94.76.0/24`，数据面已切到它（2026-11-22 23:3x），实机验证见 `docs/VOWIFI-DEBUG.md` |
 | 防驻网选型 | ✅ 定为 **A（GSM-only）**；B 被基带拒绝；C 未测（不做） |
 | KSU 模块 | ✅ v0.4.0：防驻网守护 + WebUI（卡槽/路由器地址/节点配置/延迟）+ 自检；含 asimd pid 复用修复 |
@@ -30,7 +30,8 @@ Go 中继只保留控制面）。
 - dnsmasq 不再覆盖 ePDG 域名（旧的 `address=` 行已删），手机解析到真实 `31.94.76.x`；
 - mihomo 的 TUN 只路由 `31.94.76.0/24`，规则 `IP-CIDR,31.94.76.0/24,ASIM-UK,no-resolve`，
   其余流量 `MATCH,DIRECT`；
-- `asim-relay` 不再转发，只在启动 / `PUT /config` 时写 `/etc/asim/mihomo/config.yaml` 并热重载。
+- `asim-relay` 不再转发，只在启动 / `PUT /config` / `POST /enable|/disable` 时写
+  `/etc/asim/mihomo/config.yaml` 并热重载；`/disable` 写成 `tun.enable: false`，ePDG 回到路由器 WAN。
 
 细节见 `m0/M0-C-RESULT.md`、`router/asim-relay/README.md`。
 
@@ -149,8 +150,8 @@ running」直接退出；`stop` 还会去 kill 那个无关进程。现在 `is_r
 
 ## 下一步
 
-数据面已切到 mihomo；下一步是看完 45 分钟窗口的判卷结果并把结论写进
-`docs/VOWIFI-DEBUG.md`。
+数据面已切到 mihomo，relay 的旧转发面已删除（v0.4.1）。下一步是补完 30 分钟重注册的
+判卷并把结论写进 `docs/VOWIFI-DEBUG.md`（23:45 那次被用户叫停，没有结论）。
 （`docs/superpowers/plans/2026-11-22-asim.md` 的实施计划已全部落地，只剩验收。）
 
 ## 文件地图

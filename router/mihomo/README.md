@@ -60,17 +60,29 @@ logread | grep -i mihomo | tail -5
 日志里没有 `initial configuration failed`。手机重启后应恢复 `voice=IN_SERVICE`、
 `iwlan=HOME`，且 mihomo `/connections` 里能看到到 `31.94.76.x:500/4500` 的 UDP 会话。
 
-## 回滚（约 30 秒）
+## 回滚
+
+**只是想让 VoWiFi 停下来**（mihomo 或代理出问题）：在 WebUI 点「停用中继」，
+或直接停服务。ePDG 会改走路由器自己的 WAN，不再进 TUN：
 
 ```sh
+/etc/init.d/mihomo stop
+```
+
+**要退回自研转发**（v0.3.x 的老链路）：relay 从 v0.4.1 起不再监听 500/4500，
+必须换回旧二进制，再恢复 dnsmasq 覆盖：
+
+```sh
+# Release v0.4.0 的二进制仍带旧转发路径
+wget -O /usr/bin/asim-relay https://github.com/RanCloud1314/ASIM/releases/download/v0.4.0/asim-relay-linux-amd64
+chmod 755 /usr/bin/asim-relay
 /etc/init.d/mihomo stop
 /etc/init.d/mihomo disable
 echo 'address=/epdg.epc.mnc033.mcc234.pub.3gppnetwork.org/192.168.100.1' >> /etc/dnsmasq.conf
 /etc/init.d/dnsmasq restart
+/etc/init.d/asim-relay restart
 # 然后重启手机
 ```
-
-relay 一直在监听 500/4500，DNS 指回来就恢复旧链路，不需要重装任何东西。
 
 ## 已知限制
 
