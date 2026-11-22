@@ -1,27 +1,39 @@
-# ASIM — SIM VoWiFi Proxy Router (KernelSU module)
+# ASIM — 海外卡防驻网（KernelSU 模块）
 
-Let an overseas SIM card use **WiFi Calling** from mainland China by routing only that SIM's
-ePDG (IKE/IPsec) traffic through a root-run mihomo tunnel to a chosen exit node (e.g. UK),
-while:
+让海外 SIM 卡在中国**永不驻网**、同时保持上电以支持 EAP-AKA，配合家庭 OpenWrt 上的
+`asim-relay` 中继，系统 WiFi Calling 可以正常工作。
 
-- the SIM stays powered for EAP-AKA (so system WFC registers normally),
-- the card is **prevented from camping on any domestic base station** (no roaming),
-- every other flow on the phone (other SIM's data, apps, your daily proxy app) is untouched.
+- 目标卡（默认 slot 1 / CTExcel 234/33）被锁到 GSM-only，不扫 LTE/NR；
+- SIM 仍上电，系统 IWLAN 走 WiFi 建立，VoWiFi 注册、收发短信/通话都正常；
+- 其他卡（slot 0）、其他 App、日常代理 App 完全不受影响。
 
-## Install
+## 前置
 
-1. Put the `mihomo` linux-arm64 binary at `module/bin/mihomo` (see build.sh check).
-2. `./build.sh` → `asim-<version>.zip`
-3. KernelSU manager → install zip. Reboot.
+家庭路由器上必须已部署 `asim-relay`（见 `router/asim-relay/README.md`），
+并把 `epdg.epc.mnc033.mcc234.pub.3gppnetwork.org` 用 dnsmasq 指向路由器 LAN IP。
+没有这一步，手机上什么都不会发生，只是不会驻网。
 
-## Uninstall
+## 安装
 
-Use KernelSU manager uninstall; `uninstall.sh` restores network-type masks, clears routing rules
-and stops the daemon. Nothing persists.
+```sh
+./build.sh                                   # → asim-<version>.zip
+KernelSU 管理器 → 安装 zip → 重启手机
+```
 
-## How it works
+安装后在 KernelSU 管理器里打开模块 WebUI 管理。
 
-System WFC stack (untouched) → IKE to ePDG → our `ip rule` (pref 8999) captures it into
-mihomo's TUN → trojan node (UK) → carrier ePDG → IMS registered → dialer/SMS work.
+## 卸载
 
-ePDG FQDN is derived from each SIM's IMSI per 3GPP TS 23.003, so any VoWiFi-capable SIM works.
+KernelSU 管理器卸载即可：`uninstall.sh` 会把网络类型恢复成安装前的精确原值并停掉守护。
+
+## 手工恢复（应急）
+
+```sh
+adb shell 'su -c "cmd phone set-allowed-network-types-for-users -s 1 11001101001110000111"'
+```
+
+## 已知限制
+
+- 必须在家庭 WiFi 下才有 VoWiFi；出门只有 WiFi 通话外的蜂窝能力（本方案不给）。
+- GSM-only 不防 2G 驻留：当地若仍有 GSM 覆盖，卡可能驻留 2G。
+- 切换飞行模式或断开 WiFi 会拆掉 IMS PDN 且不会自动重建，需重连 WiFi 或整机断电。

@@ -1,5 +1,5 @@
 id=asim
-name=ASIM — SIM VoWiFi Proxy Router
+name=ASIM — 海外卡防驻网
 author=asim
 version=v0.1.0
-description=Route the selected SIM's system VoWiFi (ePDG IKE/ESP) traffic through a root mihomo tunnel to a chosen proxy node, keep the SIM powered for AKA, and prevent it from camping on any domestic network. Non-intrusive: all other traffic untouched.
+description=让勾选的 SIM 卡永不驻网（GSM-only），SIM 保持上电以支持 EAP-AKA，同时配合家庭路由器上的 asim-relay 中继走系统 WiFi Calling。取消勾选/停用/卸载会恢复原始网络类型；其他卡、其他流量完全不受影响。
