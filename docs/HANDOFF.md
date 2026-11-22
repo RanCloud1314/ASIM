@@ -126,6 +126,20 @@ adb shell 'cmd phone get-allowed-network-types-for-users -s 1'
 另：强制重试（飞行模式）多次之后，IMS 会直接回 SIP `403 Registration_Error14`，
 PDN 建起来 2 秒内就被撤——这是运营商侧的短暂拒绝，停下等退避即可，不要连着强拉。
 
+补一条 19:50 复盘的硬证据：那段抓包（19:20:47 注册 → 19:50:48 拆线）**隧道全程健康**，
+19:45–19:50 每 20 秒一个 keepalive、收发各 1 个，最后两个 MOBIKE INFORMATIONAL 也都拿到了
+回应；拆线第一行是 `TNA-102: NetworkAgent channel lost` 紧跟
+`onTearDown: reason=CONNECTIVITY_SERVICE_UNWANTED`，也就是 IMS 侧主动放掉了 IWLAN 请求，
+不是中继丢包。中继日志在同一时间段没有任何错误/切 IP/回收。所以这条 30 分钟周期掉线
+不在中继，下次再遇到先看手机侧 IMS（`ImsPhone`/`getImsRegistrationTechnology=-1`）。
+
+## asimd 重启后不启动（2026-11-22 晚，已修）
+
+重启手机后线程守护没起来，`state.json` 停更、槽位不锁、WiFi Calling 也不来。原因：
+`asimd.pid` 里的 pid 在重启后被别的进程复用，`is_running` 只做 `kill -0` 就判「already
+running」直接退出；`stop` 还会去 kill 那个无关进程。现在 `is_running` 同时校验
+`/proc/<pid>/cmdline` 含 `asimd`，`stop` 也走同一个判断，selftest 加了两个用例。
+
 ## 下一步
 
 按 `docs/superpowers/plans/2026-11-22-asim.md` 从 **Task 5（`nocamp.sh`）** 开始，一路做到 Task 8 验收。
