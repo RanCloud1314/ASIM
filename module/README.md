@@ -9,8 +9,8 @@
 
 ## 前置
 
-家庭路由器上必须已部署 `asim-relay`（见 `router/asim-relay/README.md`），
-并把 `epdg.epc.mnc033.mcc234.pub.3gppnetwork.org` 用 dnsmasq 指向路由器 LAN IP。
+家庭路由器（或局域网里的 PC）上必须已部署 `asim-relay`（见 `router/asim-relay/README.md`），
+并把 `epdg.epc.mnc033.mcc234.pub.3gppnetwork.org` 用 dnsmasq 指向中继所在机器。
 没有这一步，手机上什么都不会发生，只是不会驻网。
 
 ## 安装
@@ -32,7 +32,9 @@ WebUI 上：
 - 右上角开关 = 是否接管这张卡。打开会把它加进 `SLOTS` 并立刻锁 GSM-only；
   关掉会从 `SLOTS` 移除并立刻恢复原值。**已经接管的卡由守护每 60 秒重新施加**，
   所以手工改回去会被改回来，要退出保护请用开关或下面的「停止守护」。
-- 中继区显示路由器 `asim-relay` 的启用状态、ePDG 地址数和活跃流，按钮可切换启用/停用。
+- 中继区显示运行时长、丢包、协议和活跃流；`测节点延迟` 做一次真实 UDP 往返。
+- 「路由器地址」留空即自动用手机默认网关，也可填 PC 上中继的地址。
+- 「节点配置」可以改 trojan / VLESS / Hysteria2 节点，保存后在路由器上热生效。
 - 「停止守护并恢复原网络类型」= `asimd.sh stop`：立刻停守护、按存档恢复每张已接管的卡。
   想重新开启保护就重启手机。
 
@@ -40,7 +42,7 @@ WebUI 上：
 
 ```sh
 SLOTS="1"                        # 要接管的槽位，空格分隔；slot id 从 0 开始，不是 subId
-ROUTER_API="http://192.168.100.1:8080"
+ROUTER_API=""                    # 留空 = 自动用手机默认网关
 ROUTER_TOKEN="3f9c1c7a5b2e4d6f8a0b1c2d3e4f5a6b"
 ```
 

@@ -12,7 +12,7 @@ VoWiFi（系统 WiFi Calling）的 IKE/IPsec 由家里的 OpenWrt 路由器转�
         │  └ WebUI 状态面板/开关        │        │  └ :500/:4500 收包            │
         │                              │        └──────────┬──────────────────┘
         │ 基带 --IKE 500/4500──────────┼───────────────────┘
-        │      （不经过手机 IP 栈）      │                   │ trojan over TLS
+        │      （不经过手机 IP 栈）      │                   │ trojan / vless / hy2
         │ 蜂窝侧: GSM-only, 不注册      │                   ▼
         └──────────────────────────────┘        英国节点 → EE ePDG 31.94.76.x
 ```
@@ -33,7 +33,7 @@ VoWiFi（系统 WiFi Calling）的 IKE/IPsec 由家里的 OpenWrt 路由器转�
 | 手机 root | KernelSU 或 KernelSU-Next（Magisk 未适配：WebUI 用的是 `ksu.exec`） |
 | 系统 | Android 13+（用到 `cmd phone get/set-allowed-network-types-for-users`） |
 | 路由器 | OpenWrt，能跑 Go 二进制，x86_64 已实测 |
-| 节点 | 一个能到英国 ePDG 的 trojan 节点（`udp` 转发，见 `router/asim-relay/relay.json`） |
+| 节点 | 一个能到英国 ePDG 的节点：`trojan` / `vless` / `hysteria2` 任一（见 `router/asim-relay/relay.json`） |
 | SIM | 一个走 VoWiFi 的海外卡；本仓库默认 CTExcel 英国卡（MCC/MNC 234/33） |
 
 ## 一、路由器：先让 VoWiFi 能通
@@ -60,7 +60,15 @@ ssh root@192.168.100.1 '/etc/init.d/asim-relay enable && /etc/init.d/asim-relay 
 ```
 
 改 `relay.json` 里的节点地址、密码、`listen_addr`（默认 `192.168.100.1`）。
+节点也可以装好后在 WebUI 里改，不用再登路由器。
 换网段要同时改这里和 dnsmasq 的 `address=`。细节见 [`router/asim-relay/README.md`](router/asim-relay/README.md)。
+
+### 中继装在电脑上（可选）
+
+Release 里有 `asim-relay-windows-amd64.exe` 和 `asim-relay-linux-amd64`。
+把 `relay.json` 的 `listen_addr` / `api_listen` 改成 PC 的局域网 IP 或 `0.0.0.0`，
+手机 WebUI 的「路由器地址」填这台 PC 的地址即可（不填则自动用手机默认网关）。
+Windows 上放行入站 UDP 500/4500 和 TCP 8080。
 
 验证：手机连上家里 WiFi → 打开「WLAN 通话」→ 状态栏出现 WiFi 通话标识、能收短信。
 不通就看路由器 `logread | grep asim-relay` 有没有 `flow ... -> 31.94.76.x:500`。
@@ -68,10 +76,10 @@ ssh root@192.168.100.1 '/etc/init.d/asim-relay enable && /etc/init.d/asim-relay 
 ## 二、手机：装 KSU 模块
 
 ```powershell
-.\build.ps1                                 # → asim-v0.2.0.zip（PowerShell 5.1+）
+.\build.ps1                                 # → asim-v0.3.0.zip + 两个平台的 relay（PowerShell 5.1+）
 ```
 
-1. KernelSU 管理器 → 模块 → 安装 `asim-v0.2.0.zip`；
+1. KernelSU 管理器 → 模块 → 安装 `asim-v0.3.0.zip`；
 2. **重启手机**（不是热重载，守护在 `service.sh` 里等 `sys.boot_completed`）；
 3. 模块页点 `WEBUI` 打开控制台。
 
@@ -79,7 +87,7 @@ ssh root@192.168.100.1 '/etc/init.d/asim-relay enable && /etc/init.d/asim-relay 
 
 ```sh
 SLOTS="1"                                   # 要接管的槽位，空格分隔；slot id 从 0 开始，不是 subId
-ROUTER_API="http://192.168.100.1:8080"
+ROUTER_API=""                               # 留空 = 自动用手机默认网关；也可填 http://IP:8080
 ROUTER_TOKEN="改成你自己的 token"
 ```
 
@@ -101,10 +109,21 @@ KernelSU 管理器 → 模块 → ASIM → `WEBUI`。页面每 10 秒自动刷�
 │  仅 GSM     OUT_OF_SERVICE / …   HOME        │
 │  已接管    原值 54151                         │
 └──────────────────────────────────────────────┘
+┌ 路由器地址                                    ┐
+│ [ http://192.168.100.1:8080        ]  [保存]  │
+│ [ 使用默认网关 ]                              │
+└──────────────────────────────────────────────┘
 ┌ 路由器中继                                    ┐
-│ 已启用   ePDG 5 个地址 · 活跃流 2              │
+│ 已启用  vless  v0.3.0  延迟 243 ms            │
+│ 运行时间    丢包        活跃流                 │
+│ 2 小时 2 分  0          2                     │
 │ 192.168.100.103:41071|4500 → 31.94.76.5:4500 │
-│              [ 停用中继 ]                     │
+│        [ 停用中继 ]  [ 测节点延迟 ]            │
+└──────────────────────────────────────────────┘
+┌ 节点配置                                      ┐
+│ 协议 / 地址 / 端口 / 密码或UUID / SNI          │
+│ □ 跳过证书校验   ▸ 高级（VLESS 传输 / REALITY）│
+│            [ 读取 ]  [ 保存 ]                  │
 └──────────────────────────────────────────────┘
 ┌ 应急                                          ┐
 │        [ 停止守护并恢复原网络类型 ]             │
@@ -120,7 +139,9 @@ KernelSU 管理器 → 模块 → ASIM → `WEBUI`。页面每 10 秒自动刷�
   它可能来自 IWLAN。判断有没有驻网看 IWLAN 和下面「怎么确认没驻网」。
 - **IWLAN**：`HOME` = VoWiFi 注册成功，这才是你要的绿色状态。
   其它值里 `NOT_REG_OR_SEARCHING` 表示还没连上（刚开机等 1~3 分钟）。
-- **路由器中继**：显示路由器 `asim-relay` 的启用状态、ePDG 地址数、当前活跃流，按钮可切换。
+- **路由器中继**：显示运行时长、丢包、协议、ePDG 地址数和活跃流；`测节点延迟` 会做一次真实 UDP 往返（含握手），花几百毫秒到几秒。
+- **路由器地址**：留空即跟随手机默认网关；中继装在电脑上时填电脑的 LAN 地址。
+- **节点配置**：改协议 / 地址 / 端口 / 密码或 UUID / SNI 后点保存，路由器上立刻生效（监听地址变更除外，需要重启 relay）。VLESS 的传输方式、flow、REALITY 公钥在「高级」里。
 - **操作输出**：每次点按钮的真实 stdout/stderr 都会回显在页面底部，排障先看这里。
 
 ### 典型一天
@@ -188,18 +209,21 @@ adb shell 'su -c "sh /data/adb/modules/asim/scripts/asimd.sh selftest"'
 - **运营商可能要求周期性蜂窝注册**，长期只走 WiFi 有被停卡的风险；属运营策略，模块不解决。
 - **系统/基带升级可能改变 IWLAN 行为**，升级后需要复测。
 - WebUI 的「停用中继」会拆掉 VoWiFi 的 IKE 重定向，**回不来可能要重启**，别在等电话时点。
+- **VLESS 内嵌 Xray 引擎，二进制约 32MB**（原 trojan 版约 7MB）；路由器 x86_64 无压力，老 ARM 路由器先看磁盘。
+- **Hysteria2 走 QUIC**，被墙或 UDP 被封时测延迟会超时，属网络问题；本地回环已测通。
+- 节点密码/UUID 存在 `relay.json`（0600），改配置时经 LAN 明文 HTTP 传输，和 token 同等级信任，别在不可信网络里用。
 
 ## 仓库结构
 
 ```
-module/            KSU 模块（nocamp.sh 防驻网、asimd.sh 守护、webroot/ WebUI）
-router/asim-relay/ OpenWrt 上的 Go 中继（ePDG IKE/ESP 转发）
+module/            KSU 模块（nocamp.sh 防驻网、asimd.sh 守护、relay.sh 中继桥、webroot/ WebUI）
+router/asim-relay/ 中继（ePDG IKE/ESP 转发；trojan / vless / hysteria2）
 m0/                M0 阶段实测记录与结论（为什么是这个方案）
 docs/              交接文档、设计 spec、实施 plan、验收记录
-build.ps1          打包 module/ → asim-vX.Y.Z.zip
+build.ps1          打包 module/ → asim-vX.Y.Z.zip，并编译两个平台的 relay
 ```
 
 ## 版本
 
-当前 `v0.2.0`：防驻网 + 守护 + WebUI + 路由器中继 + 真机验收。
+当前 `v0.3.0`：防驻网 + 守护 + WebUI + 多协议中继（trojan / vless / hysteria2）+ WebUI 改节点/路由器地址/测延迟 + 真机验收。
 逐条验收证据见 [`docs/superpowers/plans/2026-11-22-asim-acceptance.md`](docs/superpowers/plans/2026-11-22-asim-acceptance.md)。

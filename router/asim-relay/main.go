@@ -1,16 +1,13 @@
-// asim-relay: 把手机基带发往本机的 IKE/ESP-in-UDP 转发到英国 trojan 节点。
+// asim-relay: 把手机基带发往本机的 IKE/ESP-in-UDP 转发到 upstream 节点
+// （trojan / vless / hysteria2，见 node.go）。
 //
 // 工作方式：路由器 dnsmasq 把 ePDG 域名应答成本机 LAN IP，手机基带就会把
-// IKE 发到这里监听的 500/4500 端口；本程序为每个客户端流开一条 trojan
-// UDP 会话转给真实 ePDG，回包按原路送回。只有 ePDG 这一个域名的 UDP 受影响。
+// IKE 发到这里监听的 500/4500 端口；本程序为每个客户端流开一条上游 UDP
+// 会话转给真实 ePDG，回包按原路送回。只有 ePDG 这一个域名的 UDP 受影响。
 package main
 
 import (
-	"bufio"
 	"context"
-	"crypto/sha256"
-	"crypto/tls"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -29,13 +26,6 @@ import (
 	"time"
 )
 
-type Node struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Password string `json:"password"`
-	SNI      string `json:"sni"`
-}
-
 type Config struct {
 	Domain     string `json:"domain"`
 	ListenAddr string `json:"listen_addr"`
@@ -48,7 +38,10 @@ type Config struct {
 
 var cfgPath string
 
-const idleTimeout = 180 * time.Second
+const (
+	idleTimeout = 180 * time.Second
+	version     = "0.3.0"
+)
 
 type flow struct {
 	client   *net.UDPAddr
@@ -63,6 +56,7 @@ type flow struct {
 
 type relay struct {
 	cfg   Config
+	cfgMu sync.RWMutex // guards cfg.Domain / cfg.Node against /config updates
 	mu    sync.Mutex
 	flows map[string]*flow
 	epdg  atomic.Pointer[[]netip.Addr]
@@ -84,7 +78,9 @@ func loadConfig(path string) (Config, error) {
 }
 
 func (r *relay) saveConfig() {
+	r.cfgMu.RLock()
 	b, _ := json.MarshalIndent(r.cfg, "", "  ")
+	r.cfgMu.RUnlock()
 	if err := os.WriteFile(cfgPath, b, 0600); err != nil {
 		log.Printf("save config: %v", err)
 	}
@@ -139,16 +135,24 @@ func (r *relay) currentEpdg() (netip.Addr, bool) {
 
 func (r *relay) resolver() {
 	for {
-		if ips, err := resolveDoH(r.cfg.Domain); err != nil {
-			log.Printf("resolve %s: %v", r.cfg.Domain, err)
-		} else {
-			if p := r.epdg.Load(); p == nil || !sameAddrs(*p, ips) {
-				log.Printf("epdg %s -> %v", r.cfg.Domain, ips)
-				r.epdg.Store(&ips)
-				r.killFlows()
-			}
-		}
+		r.resolveOnce()
 		time.Sleep(10 * time.Minute)
+	}
+}
+
+func (r *relay) resolveOnce() {
+	r.cfgMu.RLock()
+	domain := r.cfg.Domain
+	r.cfgMu.RUnlock()
+	ips, err := resolveDoH(domain)
+	if err != nil {
+		log.Printf("resolve %s: %v", domain, err)
+		return
+	}
+	if p := r.epdg.Load(); p == nil || !sameAddrs(*p, ips) {
+		log.Printf("epdg %s -> %v", domain, ips)
+		r.epdg.Store(&ips)
+		r.killFlows()
 	}
 }
 
@@ -163,121 +167,6 @@ func sameAddrs(a, b []netip.Addr) bool {
 	}
 	return true
 }
-
-// ---------- trojan over TLS ----------
-
-type trojanUDP struct {
-	conn *tls.Conn
-	br   *bufio.Reader
-	mu   sync.Mutex
-}
-
-func trojanAuth(pw string) string {
-	h := sha256.New224()
-	h.Write([]byte(pw))
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-func dialTrojan(n Node, dst netip.AddrPort) (*trojanUDP, error) {
-	addr := net.JoinHostPort(n.Host, fmt.Sprint(n.Port))
-	d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-	conn, err := tls.DialWithDialer(d, "tcp", addr, &tls.Config{
-		ServerName:         n.SNI,
-		InsecureSkipVerify: true,
-		MinVersion:         tls.VersionTLS12,
-	})
-	if err != nil {
-		return nil, err
-	}
-	t := &trojanUDP{conn: conn, br: bufio.NewReaderSize(conn, 32*1024)}
-	buf := make([]byte, 0, 64)
-	buf = append(buf, trojanAuth(n.Password)...)
-	buf = append(buf, 0x0d, 0x0a)
-	buf = append(buf, 0x03) // CMD UDP ASSOCIATE
-	buf = appendAddr(buf, dst)
-	buf = append(buf, 0x0d, 0x0a)
-	if _, err := conn.Write(buf); err != nil {
-		conn.Close()
-		return nil, err
-	}
-	return t, nil
-}
-
-func appendAddr(b []byte, ap netip.AddrPort) []byte {
-	a := ap.Addr()
-	if a.Is4() {
-		b = append(b, 0x01)
-		v := a.As4()
-		b = append(b, v[:]...)
-	} else {
-		b = append(b, 0x04)
-		v := a.As16()
-		b = append(b, v[:]...)
-	}
-	p := ap.Port()
-	return append(b, byte(p>>8), byte(p))
-}
-
-// writeFrame: [addr+port][len][CRLF][payload]
-func (t *trojanUDP) writeFrame(dst netip.AddrPort, payload []byte) error {
-	buf := make([]byte, 0, 32+len(payload))
-	buf = appendAddr(buf, dst)
-	n := len(payload)
-	buf = append(buf, byte(n>>8), byte(n), 0x0d, 0x0a)
-	buf = append(buf, payload...)
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
-	_, err := t.conn.Write(buf)
-	return err
-}
-
-// readFramePayload：解析 [ATYP][ADDR][PORT][LEN][CRLF][PAYLOAD]，返回 payload
-func (t *trojanUDP) readFramePayload() ([]byte, error) {
-	t.conn.SetReadDeadline(time.Now().Add(idleTimeout))
-	atyp, err := t.br.ReadByte()
-	if err != nil {
-		return nil, err
-	}
-	switch atyp {
-	case 0x01:
-		if _, err := t.br.Discard(4); err != nil {
-			return nil, err
-		}
-	case 0x04:
-		if _, err := t.br.Discard(16); err != nil {
-			return nil, err
-		}
-	case 0x03:
-		l, err := t.br.ReadByte()
-		if err != nil {
-			return nil, err
-		}
-		if _, err := t.br.Discard(int(l)); err != nil {
-			return nil, err
-		}
-	default:
-		return nil, fmt.Errorf("bad atyp %#x", atyp)
-	}
-	if _, err := t.br.Discard(2); err != nil { // port
-		return nil, err
-	}
-	var lb [2]byte
-	if _, err := io.ReadFull(t.br, lb[:]); err != nil {
-		return nil, err
-	}
-	n := int(lb[0])<<8 | int(lb[1])
-	if _, err := t.br.Discard(2); err != nil { // CRLF
-		return nil, err
-	}
-	p := make([]byte, n)
-	if _, err := io.ReadFull(t.br, p); err != nil {
-		return nil, err
-	}
-	return p, nil
-}
-
-func (t *trojanUDP) Close() error { return t.conn.Close() }
 
 // ---------- 转发 ----------
 
@@ -339,18 +228,21 @@ func (r *relay) runFlow(key string, f *flow) {
 	r.mu.Lock()
 	f.dst = dst.String()
 	r.mu.Unlock()
-	sess, err := dialTrojan(r.cfg.Node, dst)
+	r.cfgMu.RLock()
+	node := r.cfg.Node
+	r.cfgMu.RUnlock()
+	sess, err := dialSession(node, dst)
 	if err != nil {
 		log.Printf("flow %s: dial node: %v", key, err)
 		return
 	}
-	log.Printf("flow %s -> %s via %s", key, dst, r.cfg.Node.Host)
+	log.Printf("flow %s -> %s via %s (%s)", key, dst, node.Host, node.proto())
 	defer sess.Close()
 	defer log.Printf("flow %s closed", key)
 
 	go func() {
 		for {
-			p, err := sess.readFramePayload()
+			p, err := sess.Read()
 			if err != nil {
 				sess.Close()
 				return
@@ -362,7 +254,7 @@ func (r *relay) runFlow(key string, f *flow) {
 	for {
 		select {
 		case p := <-f.ch:
-			if err := sess.writeFrame(dst, p); err != nil {
+			if err := sess.Write(p); err != nil {
 				return
 			}
 			f.lastSeen.Store(time.Now().Unix())
@@ -401,13 +293,20 @@ func (r *relay) killFlows() {
 // ---------- HTTP API（给手机 WebUI 用） ----------
 
 func (r *relay) api(w http.ResponseWriter, req *http.Request) {
-	if r.cfg.APIToken != "" && req.Header.Get("X-ASIM-Token") != r.cfg.APIToken {
+	r.cfgMu.RLock()
+	token := r.cfg.APIToken
+	r.cfgMu.RUnlock()
+	if token != "" && req.Header.Get("X-ASIM-Token") != token {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	switch req.URL.Path {
 	case "/status":
 		r.writeStatus(w)
+	case "/config":
+		r.handleConfig(w, req)
+	case "/ping":
+		r.handlePing(w, req)
 	case "/enable", "/disable":
 		if req.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -418,13 +317,125 @@ func (r *relay) api(w http.ResponseWriter, req *http.Request) {
 		if !on {
 			r.killFlows()
 		}
+		r.cfgMu.Lock()
 		r.cfg.Enabled = on
+		r.cfgMu.Unlock()
 		r.saveConfig()
 		log.Printf("relay %v via api", on)
 		r.writeStatus(w)
 	default:
 		http.NotFound(w, req)
 	}
+}
+
+// handleConfig serves and hot-applies node/domain/listen settings. Only node
+// and domain apply without a restart; listen changes are saved for next start.
+func (r *relay) handleConfig(w http.ResponseWriter, req *http.Request) {
+	switch req.Method {
+	case http.MethodGet:
+		r.cfgMu.RLock()
+		cfg := r.cfg
+		r.cfgMu.RUnlock()
+		json.NewEncoder(w).Encode(cfg)
+	case http.MethodPut:
+		var in struct {
+			Node       *Node  `json:"node"`
+			Domain     string `json:"domain"`
+			Enabled    *bool  `json:"enabled"`
+			ListenAddr string `json:"listen_addr"`
+		}
+		if err := json.NewDecoder(io.LimitReader(req.Body, 1<<20)).Decode(&in); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if in.Node != nil {
+			if err := in.Node.validate(); err != nil {
+				http.Error(w, "node: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		restart := false
+		r.cfgMu.Lock()
+		oldDomain := r.cfg.Domain
+		oldNode := r.cfg.Node.signature()
+		if in.Node != nil {
+			r.cfg.Node = *in.Node
+		}
+		if in.Domain != "" {
+			r.cfg.Domain = in.Domain
+		}
+		if in.Enabled != nil {
+			r.cfg.Enabled = *in.Enabled
+		}
+		if in.ListenAddr != "" {
+			if in.ListenAddr != r.cfg.ListenAddr {
+				restart = true
+			}
+			r.cfg.ListenAddr = in.ListenAddr
+		}
+		newNode := r.cfg.Node.signature()
+		domain := r.cfg.Domain
+		enabled := r.cfg.Enabled
+		r.cfgMu.Unlock()
+
+		if newNode != oldNode {
+			r.killFlows()
+			r.closeEngines()
+			log.Printf("node updated via api: %s", r.cfgHost())
+		}
+		if domain != oldDomain {
+			r.epdg.Store(nil)
+			r.killFlows()
+			go r.resolveOnce()
+			log.Printf("domain updated via api: %s", domain)
+		}
+		r.on.Store(enabled)
+		if !enabled {
+			r.killFlows()
+		}
+		r.saveConfig()
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "restart_required": restart})
+	default:
+		http.Error(w, "GET or PUT", http.StatusMethodNotAllowed)
+	}
+}
+
+func (r *relay) cfgHost() string {
+	r.cfgMu.RLock()
+	defer r.cfgMu.RUnlock()
+	return r.cfg.Node.addr()
+}
+
+func (r *relay) closeEngines() {
+	xrayEng.Close()
+	hyEng.Close()
+}
+
+// handlePing does one real UDP round trip so the UI latency reflects the
+// actual node handshake, not just TCP reachability.
+func (r *relay) handlePing(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		Node *Node `json:"node"`
+	}
+	json.NewDecoder(io.LimitReader(req.Body, 1<<20)).Decode(&in)
+	r.cfgMu.RLock()
+	node := r.cfg.Node
+	r.cfgMu.RUnlock()
+	if in.Node != nil {
+		node = *in.Node
+	}
+	ms, err := probe(node)
+	if err != nil {
+		log.Printf("ping %s failed: %v", node.addr(), err)
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "ms": ms})
 }
 
 func (r *relay) writeStatus(w http.ResponseWriter) {
@@ -446,14 +457,20 @@ func (r *relay) writeStatus(w http.ResponseWriter) {
 	}
 	r.mu.Unlock()
 	sort.Slice(flows, func(i, j int) bool { return flows[i].Client < flows[j].Client })
+	r.cfgMu.RLock()
+	cfg := r.cfg
+	r.cfgMu.RUnlock()
 	json.NewEncoder(w).Encode(map[string]any{
 		"enabled":   r.on.Load(),
-		"domain":    r.cfg.Domain,
+		"version":   version,
+		"domain":    cfg.Domain,
+		"protocol":  cfg.Node.proto(),
 		"epdg_ips":  ips,
 		"uptime_s":  int(time.Since(r.start).Seconds()),
 		"drops":     r.drops.Load(),
 		"flows":     flows,
-		"node_host": r.cfg.Node.Host,
+		"node_host": cfg.Node.Host,
+		"node_port": cfg.Node.Port,
 	})
 }
 

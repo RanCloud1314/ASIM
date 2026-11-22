@@ -68,6 +68,19 @@
   .note strong { color:var(--warn); font-weight:600; }
   .flow { font:12px/1.5 ui-monospace,monospace; color:#a9bacd; }
   .empty { color:var(--dim); font-size:13px; }
+  input, select {
+    font:inherit; font-size:14px; width:100%; padding:9px 10px; border-radius:9px;
+    border:1px solid var(--line); background:#0e141b; color:var(--fg);
+  }
+  input:focus, select:focus { outline:none; border-color:var(--accent); }
+  .field { margin-bottom:10px; }
+  .field b { display:block; font-size:11px; color:var(--dim); font-weight:600; margin-bottom:4px; }
+  .check { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--dim); margin:2px 0 10px; }
+  .check input { width:auto; }
+  details { margin-top:4px; }
+  summary { font-size:12px; color:var(--dim); cursor:pointer; }
+  details .field:first-of-type { margin-top:10px; }
+  .ping { font-variant-numeric:tabular-nums; }
 </style>
 </head>
 <body>
@@ -78,10 +91,66 @@
 <div id="slots"></div>
 
 <div class="card">
+  <h2>路由器地址</h2>
+  <div class="row">
+    <input id="routerUrl" type="text" inputmode="url" placeholder="留空 = 手机默认网关" aria-label="路由器地址">
+    <button id="routerSave" style="flex:0 0 auto">保存</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="routerAuto">使用默认网关</button>
+  </div>
+  <p class="note" style="margin-bottom:0;margin-top:10px">
+    中继装在路由器上就留空自动探测；装在电脑上时填电脑的局域网地址，例如
+    <code>http://192.168.1.10:8080</code>。
+  </p>
+</div>
+
+<div class="card">
   <h2>路由器中继</h2>
   <div id="relay" class="empty">读取中…</div>
   <div class="row" style="margin-top:12px">
     <button id="relayBtn" disabled>切换</button>
+    <button id="pingBtn" disabled>测节点延迟</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>节点配置 <span id="nodeHint" class="badge"></span></h2>
+  <div class="field"><b>协议</b>
+    <select id="n_protocol">
+      <option value="trojan">Trojan</option>
+      <option value="vless">VLESS</option>
+      <option value="hysteria2">Hysteria2</option>
+    </select>
+  </div>
+  <div class="field"><b>地址</b><input id="n_host" type="text" autocomplete="off" spellcheck="false"></div>
+  <div class="field"><b>端口</b><input id="n_port" type="number" inputmode="numeric" min="1" max="65535"></div>
+  <div class="field"><b>密码 / UUID</b><input id="n_password" type="text" autocomplete="off" spellcheck="false"></div>
+  <div class="field"><b>SNI（伪装域名）</b><input id="n_sni" type="text" autocomplete="off" spellcheck="false"></div>
+  <label class="check"><input type="checkbox" id="n_insecure">跳过证书校验（自签证书时勾选）</label>
+  <details>
+    <summary>高级（VLESS 传输 / REALITY）</summary>
+    <div class="field"><b>传输方式</b>
+      <select id="n_network">
+        <option value="tcp">tcp</option>
+        <option value="ws">websocket</option>
+        <option value="grpc">gRPC</option>
+        <option value="httpupgrade">httpupgrade</option>
+        <option value="xhttp">xhttp / splithttp</option>
+      </select>
+    </div>
+    <div class="field"><b>flow</b><input id="n_flow" type="text" placeholder="xtls-rprx-vision" spellcheck="false"></div>
+    <div class="field"><b>path</b><input id="n_path" type="text" spellcheck="false"></div>
+    <div class="field"><b>Host 头</b><input id="n_host_header" type="text" spellcheck="false"></div>
+    <div class="field"><b>gRPC serviceName</b><input id="n_service_name" type="text" spellcheck="false"></div>
+    <div class="field"><b>REALITY 公钥</b><input id="n_reality_public_key" type="text" spellcheck="false"></div>
+    <div class="field"><b>REALITY shortId</b><input id="n_reality_short_id" type="text" spellcheck="false"></div>
+    <div class="field"><b>uTLS 指纹</b><input id="n_fingerprint" type="text" placeholder="chrome" spellcheck="false"></div>
+    <div class="field"><b>encryption</b><input id="n_encryption" type="text" placeholder="none" spellcheck="false"></div>
+  </details>
+  <div class="row" style="margin-top:12px">
+    <button id="nodeLoad">读取</button>
+    <button id="nodeSave">保存</button>
   </div>
 </div>
 
@@ -108,11 +177,13 @@
 
 <script>
 const MOD = '/data/adb/modules/asim';
-const CONF = '/data/adb/asim/asim.conf';
 const STATE = '/data/adb/asim/state.json';
+const RELAY = MOD + '/scripts/relay.sh';
 const out = document.getElementById('out');
 let busy = false;
 let lastState = null;
+let lastPing = null;
+let routerTouched = false;
 
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -140,6 +211,22 @@ async function sh(cmd) {
   return text.trim();
 }
 
+// relay.sh 在失败时也会打印 {"error":...}，所以退出码非 0 时仍尝试解析。
+async function relay(sub, arg) {
+  const cmd = 'sh ' + RELAY + ' ' + sub + (arg ? ' ' + arg : '');
+  let raw = '';
+  try {
+    raw = await sh(cmd);
+  } catch (e) {
+    raw = e.message;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    throw new Error('中继返回异常: ' + String(raw).slice(0, 160));
+  }
+}
+
 async function act(label, cmd) {
   if (busy) return;
   busy = true;
@@ -159,10 +246,20 @@ async function act(label, cmd) {
 
 function badge(text, cls) { return '<span class="badge ' + (cls || '') + '">' + esc(text) + '</span>'; }
 
+function kv(k, v) { return '<div class="kv"><b>' + esc(k) + '</b><span>' + v + '</span></div>'; }
+
 function regClass(v) {
   if (v === 'HOME' || v === 'IN_SERVICE') return 'ok';
   if (!v || v === 'OUT_OF_SERVICE' || v === 'NOT_REG_OR_SEARCHING') return 'bad';
   return 'warn';
+}
+
+function fmtUptime(s) {
+  s = Math.max(0, Number(s) || 0);
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  if (d) return d + ' 天 ' + h + ' 小时';
+  if (h) return h + ' 小时 ' + m + ' 分';
+  return m + ' 分 ' + Math.floor(s % 60) + ' 秒';
 }
 
 function renderSlots(slots) {
@@ -205,18 +302,31 @@ function renderSlots(slots) {
 function renderRelay(r) {
   const box = document.getElementById('relay');
   const btn = document.getElementById('relayBtn');
+  const ping = document.getElementById('pingBtn');
   if (!r || r.enabled === null || r.enabled === undefined) {
     box.innerHTML = '<span class="empty">路由器不可达（不影响防驻网）</span>';
     btn.disabled = true;
     btn.textContent = '切换';
+    ping.disabled = true;
     return;
   }
   btn.disabled = false;
   btn.textContent = r.enabled ? '停用中继' : '启用中继';
+  ping.disabled = false;
   const flows = Array.isArray(r.flows) ? r.flows : [];
+  const proto = r.protocol || 'trojan';
   box.innerHTML =
     '<div class="row">' + (r.enabled ? badge('已启用', 'ok') : badge('已停用', 'bad')) +
-      '<span class="empty">ePDG ' + (r.epdg_ips || []).length + ' 个地址 · 活跃流 ' + flows.length + '</span></div>' +
+      badge(proto) + (r.version ? badge('v' + r.version) : '') +
+      (lastPing !== null ? badge('延迟 ' + lastPing + ' ms', lastPing < 500 ? 'ok' : lastPing < 1200 ? 'warn' : 'bad') : '') +
+    '</div>' +
+    '<div class="grid">' +
+      kv('运行时间', esc(fmtUptime(r.uptime_s))) +
+      kv('丢包', esc(r.drops ?? '-')) +
+      kv('活跃流', esc(flows.length)) +
+    '</div>' +
+    '<div class="meta">节点 ' + esc(r.node_host || '-') + (r.node_port ? ':' + esc(r.node_port) : '') +
+      ' · ePDG ' + (r.epdg_ips || []).length + ' 个地址</div>' +
     (flows.length
       ? '<div class="flow" style="margin-top:8px">' + flows.map(f =>
           esc(f.client) + ' → ' + esc(f.dest)).join('<br>') + '</div>'
@@ -229,6 +339,169 @@ function renderMeta(state) {
   const el = document.querySelector('header span');
   el.textContent = stale ? '状态 ' + age + 's 未更新 · 守护可能未运行' : '海外卡防驻网 · 路由器中继';
   el.style.color = stale ? 'var(--warn)' : '';
+}
+
+// ---------- 路由器地址 ----------
+
+function renderRouter(router) {
+  const input = document.getElementById('routerUrl');
+  if (!router) return;
+  input.placeholder = router.url ? '自动：' + router.url : '留空 = 手机默认网关';
+  if (!routerTouched && document.activeElement !== input) input.value = router.saved || '';
+}
+
+async function saveRouter(value) {
+  if (busy) return;
+  busy = true;
+  document.body.style.opacity = .6;
+  const arg = value ? "'" + value + "'" : 'auto';
+  log('$ 路由器地址 → ' + (value || '自动'));
+  try {
+    const r = await relay('setrouter', arg);
+    if (r.error) throw new Error(r.error);
+    routerTouched = false;
+    document.getElementById('routerUrl').value = r.saved || '';
+    log('✔ 已保存，当前使用 ' + r.url);
+  } catch (e) {
+    log('✘ ' + e.message);
+  } finally {
+    busy = false;
+    document.body.style.opacity = 1;
+    refresh();
+  }
+}
+
+// ---------- 节点配置 ----------
+
+const NODE_TEXT = ['host', 'password', 'sni', 'flow', 'path', 'host_header',
+  'service_name', 'reality_public_key', 'reality_short_id', 'fingerprint', 'encryption'];
+const NODE_OPTIONAL = NODE_TEXT.filter(k => k !== 'host' && k !== 'password');
+
+function effectiveInsecure(node) {
+  if (node.insecure !== undefined) return node.insecure === true;
+  return (node.protocol || 'trojan') === 'trojan'; // 后端对老配置的默认值
+}
+
+function fillNode(node) {
+  node = node || {};
+  document.getElementById('n_protocol').value = node.protocol || 'trojan';
+  document.getElementById('n_port').value = node.port || '';
+  NODE_TEXT.forEach(k => {
+    const el = document.getElementById('n_' + k);
+    if (el) el.value = node[k] ?? '';
+  });
+  document.getElementById('n_network').value = node.network || 'tcp';
+  document.getElementById('n_insecure').checked = effectiveInsecure(node);
+}
+
+function readNode() {
+  const get = id => document.getElementById(id).value.trim();
+  const protocol = get('n_protocol');
+  const node = {
+    protocol: protocol,
+    host: get('n_host'),
+    port: Number(get('n_port')),
+    password: get('n_password'),
+    insecure: document.getElementById('n_insecure').checked,
+  };
+  if (!node.host) throw new Error('节点地址不能为空');
+  if (!(node.port > 0 && node.port <= 65535)) throw new Error('端口必须是 1-65535');
+  if (!node.password) throw new Error('密码 / UUID 不能为空');
+  NODE_OPTIONAL.forEach(k => { const v = get('n_' + k); if (v) node[k] = v; });
+  if (protocol === 'vless') node.network = get('n_network');
+  return node;
+}
+
+async function loadNode() {
+  const hint = document.getElementById('nodeHint');
+  hint.textContent = '读取中…';
+  try {
+    const cfg = await relay('get');
+    if (cfg.error) throw new Error(cfg.error);
+    fillNode(cfg.node);
+    hint.textContent = '已读取';
+    hint.className = 'badge ok';
+  } catch (e) {
+    hint.textContent = '读取失败';
+    hint.className = 'badge bad';
+    log('读取节点配置失败: ' + e.message);
+  }
+}
+
+function b64(s) {
+  return btoa(String.fromCharCode.apply(null, new TextEncoder().encode(s)));
+}
+
+async function saveNode() {
+  if (busy) return;
+  let node;
+  try { node = readNode(); } catch (e) { log('✘ ' + e.message); return; }
+  busy = true;
+  document.body.style.opacity = .6;
+  const hint = document.getElementById('nodeHint');
+  hint.textContent = '保存中…';
+  hint.className = 'badge';
+  log('$ 保存节点 ' + node.protocol + ' ' + node.host + ':' + node.port);
+  try {
+    const r = await relay('put', b64(JSON.stringify({ node })));
+    if (r.error) throw new Error(r.error);
+    fillNode(node);
+    lastPing = null;
+    hint.textContent = '已保存';
+    hint.className = 'badge ok';
+    log('✔ 节点已生效' + (r.restart_required ? '（监听地址变更需重启中继）' : ''));
+  } catch (e) {
+    hint.textContent = '保存失败';
+    hint.className = 'badge bad';
+    log('✘ ' + e.message);
+  } finally {
+    busy = false;
+    document.body.style.opacity = 1;
+    refresh();
+  }
+}
+
+async function pingNode() {
+  if (busy) return;
+  busy = true;
+  const btn = document.getElementById('pingBtn');
+  btn.disabled = true;
+  btn.textContent = '测试中…';
+  log('$ 测试节点延迟（真实 UDP 往返）');
+  try {
+    const r = await relay('ping');
+    if (r.error) throw new Error(r.error);
+    lastPing = r.ms;
+    log('✔ 延迟 ' + r.ms + ' ms');
+  } catch (e) {
+    lastPing = null;
+    log('✘ 测延迟失败: ' + e.message);
+  } finally {
+    busy = false;
+    btn.disabled = false;
+    btn.textContent = '测节点延迟';
+    renderRelay((lastState && lastState.relay) || null);
+  }
+}
+
+async function toggleRelay() {
+  if (busy) return;
+  const on = lastState && lastState.relay && lastState.relay.enabled;
+  const path = on ? 'disable' : 'enable';
+  busy = true;
+  log('$ 中继 ' + path);
+  try {
+    const r = await relay(path);
+    if (r.error) throw new Error(r.error);
+    lastState = lastState || {};
+    lastState.relay = r;
+    renderRelay(r);
+    log('✔ 中继已' + (r.enabled ? '启用' : '停用'));
+  } catch (e) {
+    log('✘ ' + e.message);
+  } finally {
+    busy = false;
+  }
 }
 
 async function refresh() {
@@ -250,15 +523,29 @@ async function refresh() {
   lastState = state;
   renderSlots(state.slots);
   renderRelay(state.relay);
+  renderRouter(state.router);
   renderMeta(state);
 }
 
-document.getElementById('relayBtn').addEventListener('click', () => {
-  const on = lastState && lastState.relay && lastState.relay.enabled;
-  const path = on ? 'disable' : 'enable';
-  act('中继 ' + path,
-    '. ' + CONF + ' && curl -s --max-time 4 -X POST -H "X-ASIM-Token: $ROUTER_TOKEN" "$ROUTER_API/' + path + '"');
+document.getElementById('routerUrl').addEventListener('input', () => { routerTouched = true; });
+document.getElementById('routerSave').addEventListener('click', () => {
+  const value = document.getElementById('routerUrl').value.trim();
+  if (value && !/^(https?:\/\/)?[A-Za-z0-9.\-]+(:\d+)?$/.test(value)) {
+    log('✘ 地址格式不对，例如 192.168.100.1 或 http://192.168.1.10:8080');
+    return;
+  }
+  saveRouter(value);
 });
+document.getElementById('routerAuto').addEventListener('click', () => {
+  routerTouched = false;
+  document.getElementById('routerUrl').value = '';
+  saveRouter('');
+});
+
+document.getElementById('relayBtn').addEventListener('click', toggleRelay);
+document.getElementById('pingBtn').addEventListener('click', pingNode);
+document.getElementById('nodeLoad').addEventListener('click', loadNode);
+document.getElementById('nodeSave').addEventListener('click', saveNode);
 
 document.getElementById('stopBtn').addEventListener('click', () => {
   if (!confirm('停止守护并恢复所有已锁卡槽的原始网络类型？')) return;
@@ -266,6 +553,7 @@ document.getElementById('stopBtn').addEventListener('click', () => {
 });
 
 refresh();
+loadNode();
 setInterval(refresh, 10000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 </script>

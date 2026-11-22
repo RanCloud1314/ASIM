@@ -7,15 +7,15 @@
 ## 一句话
 
 CTExcel 英国卡（234/33）在中国**永不驻网**，但 SIM 保持上电；在家 WiFi 下系统 VoWiFi 正常工作。
-手机侧 KSU 模块只负责防驻网，VoWiFi 分流在家庭 OpenWrt 上（Go 中继 → 英国 trojan → EE ePDG）。
+手机侧 KSU 模块只负责防驻网，VoWiFi 分流在家庭 OpenWrt（或局域网 PC）上（Go 中继 → 英国节点 → EE ePDG）。
 
 ## 当前状态
 
 | 部分 | 状态 |
 |---|---|
-| 路由器 `asim-relay`（Go） | ✅ 已编译、已部署到路由器、已 `enable`，真机验证 VoWiFi 注册成功 + 一通 IWLAN 通话 |
+| 路由器 `asim-relay`（Go） | ✅ v0.3.0：trojan / vless / hysteria2，已部署到路由器，真机验证 VoWiFi 注册 + IWLAN 通话；`/config` 热更新与 `/ping` 已实测 |
 | 防驻网选型 | ✅ 定为 **A（GSM-only）**；B 被基带拒绝；C 未测（不做） |
-| KSU 模块 | ❌ 只有骨架（`module/module.prop` + `README.md`），脚本 / 守护 / WebUI 全待写 |
+| KSU 模块 | ✅ v0.3.0：防驻网守护 + WebUI（卡槽/路由器地址/节点配置/延迟）+ 自检 |
 | 手机当前状态 | 两张卡都可正常驻网；adb 在线；slot 1 原值 `user=54151`（NR 已关） |
 
 ## 链路（已验证）

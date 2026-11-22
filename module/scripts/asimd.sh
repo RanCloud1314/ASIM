@@ -18,6 +18,8 @@ ROUTER_TOKEN=""
 
 # nocamp.sh defines lock/unlock/slot_mask/slot_line/archive_of/GSM_ONLY_DEC.
 . "$(dirname "$SELF")/nocamp.sh"
+# relay.sh defines router_url/setrouter/normalize_router (shared with the WebUI).
+. "$(dirname "$SELF")/relay.sh"
 
 # customize.sh only runs at install time; self-heal a wiped /data/adb for reboot paths.
 if [ ! -f "$CONF" ] && [ "$(id -u)" = 0 ]; then
@@ -68,12 +70,16 @@ relay_sanitize() { # pass our own /status through; anything else becomes null
 }
 
 relay_status() {
-  if [ -z "$ROUTER_API" ]; then
-    echo '{"enabled":null}'
-    return 0
-  fi
+  local base
+  base=$(router_url 2>/dev/null) || { echo '{"enabled":null}'; return 0; }
   relay_sanitize "$(curl -s --max-time 3 -H "X-ASIM-Token: $ROUTER_TOKEN" \
-    "$ROUTER_API/status" 2>/dev/null)"
+    "$base/status" 2>/dev/null)"
+}
+
+router_info() {
+  local u
+  u=$(router_url 2>/dev/null) || u=""
+  printf '{"url":"%s","saved":"%s"}' "$(json_escape "$u")" "$(json_escape "${ROUTER_API%/}")"
 }
 
 write_state() {
@@ -100,7 +106,7 @@ write_state() {
       first=0
       compose_slot "$s" "${sub:-}" "${name:-unknown}" "$mask" "$orig" "$managed" "$1" "$2" "$3"
     done
-    printf '],"relay":%s}\n' "$(relay_status)"
+    printf '],"relay":%s,"router":%s}\n' "$(relay_status)" "$(router_info)"
   } > "$tmp" && mv "$tmp" "$ASIM_DIR/state.json" && chmod 600 "$ASIM_DIR/state.json"
   rm -f "$tel"
 }
@@ -197,6 +203,7 @@ status() {
     echo "asimd: stopped"
   fi
   echo "slots: ${SLOTS:-none}"
+  echo "router: $(router_url 2>/dev/null || echo unknown) (saved: ${ROUTER_API:-auto})"
   echo "relay: $(relay_status)"
   [ -f "$ASIM_DIR/state.json" ] && echo "state: $ASIM_DIR/state.json"
 }
@@ -239,6 +246,19 @@ selftest() {
   check "relay ok" '{"enabled":true,"flows":[]}' "$(relay_sanitize '{"enabled":true,"flows":[]}')"
   check "relay garbage" '{"enabled":null}' "$(relay_sanitize 'Error 500')"
   check "relay empty" '{"enabled":null}' "$(relay_sanitize '')"
+
+  echo "--- router ---"
+  check "bare host gets scheme+port" "http://192.168.1.1:8080" "$(normalize_router 192.168.1.1)"
+  check "host:port kept" "http://192.168.1.1:9090" "$(normalize_router 192.168.1.1:9090)"
+  check "https trailing slash trimmed" "https://r.example:9443" "$(normalize_router https://r.example:9443/)"
+  check "quote rejected" "" "$(normalize_router 'a"b' || :)"
+  conf=$TMPD/asimd-conf-selftest
+  printf 'SLOTS="1"\nROUTER_API="http://192.168.1.1:8080"\n' > "$conf"
+  ( CONF=$conf; setrouter 10.0.0.2 ) >/dev/null
+  check "setrouter rewrites" 'ROUTER_API="http://10.0.0.2:8080"' "$(grep '^ROUTER_API=' "$conf")"
+  ( CONF=$conf; setrouter auto ) >/dev/null
+  check "setrouter auto clears" 'ROUTER_API=""' "$(grep '^ROUTER_API=' "$conf")"
+  rm -f "$conf"
 
   [ "$FAILS" -eq 0 ] || { echo "selftest FAILED: $FAILS"; return 1; }
   echo "selftest passed"
