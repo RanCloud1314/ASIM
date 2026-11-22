@@ -124,10 +124,13 @@ tick() {
   write_state || log "write_state failed"
 }
 
+# pid alone is not enough: after a reboot the old pid is reused by another process,
+# and a bare `kill -0` would then block start (and let stop kill a stranger).
 is_running() {
   local pid
   pid=$(cat "$PIDF" 2>/dev/null)
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null &&
+    grep -q asimd "/proc/$pid/cmdline" 2>/dev/null
 }
 
 # mkdir is atomic and, unlike toybox flock on Android mksh, survives exec.
@@ -176,7 +179,7 @@ start() {
 stop() {
   local pid f s i=0
   pid=$(cat "$PIDF" 2>/dev/null)
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  if is_running; then
     kill "$pid" 2>/dev/null
     while [ $i -lt 15 ] && kill -0 "$pid" 2>/dev/null; do
       sleep 1
@@ -259,6 +262,18 @@ selftest() {
   ( CONF=$conf; setrouter auto ) >/dev/null
   check "setrouter auto clears" 'ROUTER_API=""' "$(grep '^ROUTER_API=' "$conf")"
   rm -f "$conf"
+
+  echo "--- pid reuse ---"
+  # a reboot-reused pid must not look like our daemon (and must not be killed by stop)
+  savedpidf=$(cat "$PIDF" 2>/dev/null)
+  sleep 30 &
+  sp=$!
+  echo "$sp" > "$PIDF"
+  check "live stranger pid rejected" "" "$(is_running || :)"
+  kill "$sp" 2>/dev/null
+  echo 999999 > "$PIDF"
+  check "dead pid rejected" "" "$(is_running || :)"
+  if [ -n "$savedpidf" ]; then echo "$savedpidf" > "$PIDF"; else rm -f "$PIDF"; fi
 
   [ "$FAILS" -eq 0 ] || { echo "selftest FAILED: $FAILS"; return 1; }
   echo "selftest passed"
