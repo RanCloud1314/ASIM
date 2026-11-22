@@ -81,6 +81,8 @@ Release 提供 `asim-relay-windows-amd64.exe` 和 `asim-relay-linux-amd64`。
 
 | 字段 | 说明 |
 |---|---|
+| `domain` | ePDG 域名，中继自己走 DoH 解析 |
+| `epdg_ip` | 可选，钉死一个 ePDG IP 跳过 DoH；留空则解析后沿用正在用的那个 IP |
 | `protocol` | `trojan`（默认，兼容旧配置）/ `vless` / `hysteria2` |
 | `host` / `port` | 节点地址；也可填域名 |
 | `password` | trojan 密码、vless UUID、hysteria2 auth |
@@ -94,6 +96,9 @@ Release 提供 `asim-relay-windows-amd64.exe` 和 `asim-relay-linux-amd64`。
 
 这些字段都能在手机 WebUI「节点配置」里改，保存后热生效（不用重启 relay）。
 `listen_addr` / `listen_ports` / `api_listen` 改了要重启进程。
+
+ePDG 的 DoH 答案顺序会轮转，换序不代表旧 IP 失效：中继会一直用当前 IP，只有它从答案里
+消失才切换；上游 UDP 会话若「只发不收」超过 25 秒会被主动回收，避免手机重传投进黑洞。
 
 ## 验证
 

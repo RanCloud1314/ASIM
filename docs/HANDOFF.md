@@ -13,7 +13,7 @@ CTExcel 英国卡（234/33）在中国**永不驻网**，但 SIM 保持上电；
 
 | 部分 | 状态 |
 |---|---|
-| 路由器 `asim-relay`（Go） | ✅ v0.3.0：trojan / vless / hysteria2，已部署到路由器，真机验证 VoWiFi 注册 + IWLAN 通话；`/config` 热更新与 `/ping` 已实测 |
+| 路由器 `asim-relay`（Go） | ✅ v0.3.1：trojan / vless / hysteria2，已部署到路由器，真机验证 VoWiFi 注册 + IWLAN 通话；`/config` 热更新与 `/ping` 已实测；本轮修掉 ePDG IP 换序切流与死会话挂起（见「掉线根因」） |
 | 防驻网选型 | ✅ 定为 **A（GSM-only）**；B 被基带拒绝；C 未测（不做） |
 | KSU 模块 | ✅ v0.3.0：防驻网守护 + WebUI（卡槽/路由器地址/节点配置/延迟）+ 自检 |
 | 手机当前状态 | 两张卡都可正常驻网；adb 在线；slot 1 原值 `user=54151`（NR 已关） |
@@ -105,6 +105,26 @@ adb shell 'su -c "sh /data/adb/modules/asim/scripts/nocamp.sh unlock 1"'
 adb shell 'su -c "cmd phone set-allowed-network-types-for-users -s 1 1101001110000111"'
 adb shell 'cmd phone get-allowed-network-types-for-users -s 1'
 ```
+
+## 掉线根因（2026-11-22 晚，v0.3.1）
+
+症状：开机后 VoWiFi 正常，约 5–11 分钟后 IMS PDN 被拆（`PREFERRED_DATA_SWITCHED` /
+`CONNECTIVITY_SERVICE_UNWANTED`），voice 变 `OUT_OF_SERVICE`，约 5 分钟后自恢复；WiFi 全程没断。
+
+抓包 + 日志定位到中继的两个缺陷（已修）：
+
+1. `resolveOnce` 每 10 分钟重解析 ePDG，DoH 答案只要**换序**就 `killFlows()`，把一条正常
+   的 IPsec 会话掐断。现在只在「正在用的 IP 从答案集里消失」时才换、才切流。
+2. flow 的读协程出错只 `Close` 不 drop；而上游 trojan UDP 会话会被节点在**空闲 60 秒**后
+   `EOF`（实测 `flow ...: read: EOF`）。这期间写仍然成功、回包永远不来，手机的重传全投进
+   黑洞，必须等 180s idle 才重建——正好对上 5 分钟空窗。现在读出错立刻 drop，且「只发不收
+   超过 25s」主动回收。
+
+附带结论：`.5` 和 `.9` 都能完整走完 IKE INIT/AUTH + 双向 ESP（两段抓包各有 36 条），
+所以「换到 .5 就坏」不成立，坏的是中继自己把会话切了/挂死了。
+
+另：强制重试（飞行模式）多次之后，IMS 会直接回 SIP `403 Registration_Error14`，
+PDN 建起来 2 秒内就被撤——这是运营商侧的短暂拒绝，停下等退避即可，不要连着强拉。
 
 ## 下一步
 
