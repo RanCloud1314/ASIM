@@ -65,7 +65,7 @@ lock() {
   cur=$(slot_mask "$slot") || { die "cannot read mask for slot $slot"; return 1; }
 
   if [ "$cur" = "$GSM_ONLY_DEC" ]; then
-    log "slot $slot already GSM-only"
+    [ "${2:-}" = quiet ] || log "slot $slot already GSM-only"
     return 0
   fi
 
@@ -95,7 +95,7 @@ unlock() {
   isnum "$slot" || die "slot must be a number"
   f=$(archive_of "$slot")
   if [ ! -f "$f" ]; then
-    log "slot $slot: no archive, nothing to restore"
+    [ "${2:-}" = quiet ] || log "slot $slot: no archive, nothing to restore"
     return 0
   fi
   orig=$(cat "$f")
@@ -184,10 +184,18 @@ selftest() {
   echo "selftest passed"
 }
 
-case "${1:-}" in
-  lock) lock "${2:?slot}" ;;
-  unlock) unlock "${2:?slot}" ;;
-  status) status "${2:-}" ;;
-  selftest) selftest ;;
-  *) echo "usage: $0 lock|unlock|status|selftest [slot]" >&2; exit 2 ;;
-esac
+main() {
+  case "${1:-}" in
+    lock) lock "${2:?slot}" ;;
+    unlock) unlock "${2:?slot}" ;;
+    status) status "${2:-}" ;;
+    selftest) selftest ;;
+    *) echo "usage: $0 lock|unlock|status|selftest [slot]" >&2; exit 2 ;;
+  esac
+}
+
+# Sourced by asimd.sh -> only define functions (never run main or exit).
+if [ "${0##*/}" = "nocamp.sh" ]; then
+  main "$@"
+  exit $?
+fi

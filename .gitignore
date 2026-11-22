@@ -1,6 +1,5 @@
 spike/
 *.zip
-module/bin/mihomo
 .superpowers/
 *.gz
 router/asim-relay/asim-relay-linux-amd64

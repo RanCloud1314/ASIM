@@ -1,7 +1,6 @@
-# Build ASIM module zip. Requires module/bin/mihomo (linux-arm64).
+# Build the ASIM KernelSU module zip.
 $ErrorActionPreference = "Stop"
-$root = Split-Path $Parent:MyInvocation.MyCommand.Path -Parent
-if (-not (Test-Path "$root\module\bin\mihomo")) { Write-Error "module/bin/mihomo missing - download mihomo linux-arm64 release first"; exit 1 }
+$root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 $ver = (Get-Content "$root\module\module.prop" | Where-Object { $_ -match '^version=' }) -replace 'version=',''
 $zip = "$root\asim-$ver.zip"
 if (Test-Path $zip) { Remove-Item $zip }

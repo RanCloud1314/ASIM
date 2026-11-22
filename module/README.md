@@ -16,7 +16,7 @@
 ## 安装
 
 ```sh
-./build.sh                                   # → asim-<version>.zip
+.\build.ps1                                  # → asim-<version>.zip（PowerShell 5.1+）
 KernelSU 管理器 → 安装 zip → 重启手机
 ```
 
