@@ -50,12 +50,13 @@ nslookup epdg.epc.mnc033.mcc234.pub.3gppnetwork.org 127.0.0.1 | tail -6   # 应�
 ## 验证
 
 ```sh
-ip route | grep 31.94.76
+ip route show table all | grep 31.94.76      # mihomo 把路由放在 table 2022
+ip rule | grep 9002
 wget -q -O - --header='Authorization: Bearer <token>' http://127.0.0.1:9090/version
 logread | grep -i mihomo | tail -5
 ```
 
-`ip route` 应有 `31.94.76.0/24 dev asim0`；`/version` 返回 `{"meta":true,...}`；
+`ip route show table all` 应有 `31.94.76.0/24 ... dev asim0 table 2022`；`/version` 返回 `{"meta":true,...}`；
 日志里没有 `initial configuration failed`。手机重启后应恢复 `voice=IN_SERVICE`、
 `iwlan=HOME`，且 mihomo `/connections` 里能看到到 `31.94.76.x:500/4500` 的 UDP 会话。
 
