@@ -230,3 +230,7 @@ build.ps1          打包 module/ → asim-vX.Y.Z.zip，并编译两个平台的
 启停开关全部走 mihomo。
 `v0.4.0` 是切换数据面到 mihomo 的第一版（仍带旧转发面）；`v0.3.x` 是纯自研转发路线（已废弃）。
 逐条验收证据见 [`docs/superpowers/plans/2026-11-22-asim-acceptance.md`](docs/superpowers/plans/2026-11-22-asim-acceptance.md)。
+
+## 贡献者
+
+- [@RanCloud1314](https://github.com/RanCloud1314) — 项目发起与维护
